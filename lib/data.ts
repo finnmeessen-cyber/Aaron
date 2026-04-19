@@ -1,0 +1,841 @@
+import type { Route } from "next";
+
+import {
+  buildWeeklySuggestions,
+  computeChecklistCompletionFromCount,
+  computeStreak,
+  computeTrendDelta,
+  computeWeeklyWeightAverage,
+  resolveEntryStatus,
+  toChartSeries
+} from "@/lib/analytics";
+import { getTrackedSupplementIds } from "@/lib/supplement-tracking";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import type { TableRow } from "@/types/supabase";
+import {
+  average,
+  daysSince,
+  differenceInDateKeys,
+  endOfWeekDateKey,
+  getDateKeyDayIndex,
+  isDateKey,
+  shiftDateKey,
+  startOfWeekDateKey,
+  toDateInputValue
+} from "@/lib/utils";
+
+type TypedSupabase = ReturnType<typeof createServerSupabaseClient>;
+
+type DailyEntry = TableRow<"daily_entries">;
+type DailyChecklist = TableRow<"daily_checklists">;
+type ChecklistTemplate = TableRow<"checklist_templates">;
+type Phase = TableRow<"phases">;
+type PhaseSupplement = TableRow<"phase_supplements">;
+type SupplementLog = TableRow<"supplement_logs">;
+type SupplementCatalog = TableRow<"supplement_catalog">;
+type UserSupplement = TableRow<"user_supplements">;
+type MealTemplate = TableRow<"meal_templates">;
+type DayTemplate = TableRow<"day_templates">;
+type UserSettings = TableRow<"user_settings">;
+type Profile = TableRow<"profiles">;
+type SupplementCatalogSummary = Pick<SupplementCatalog, "id" | "slug" | "is_default_active">;
+type UserSupplementStatus = Pick<UserSupplement, "supplement_id" | "active">;
+
+export type AppShellData = {
+  profile: Profile | null;
+  settings: UserSettings | null;
+  currentPhase: Phase | null;
+  phaseDurationLabel: string | null;
+};
+
+export type DashboardData = {
+  dateLabel: string;
+  todayEntry: DailyEntry | null;
+  todayChecklistCompletion: number;
+  openLoopCount: number;
+  statusLabel: string;
+  currentPhase: Phase | null;
+  phaseDurationLabel: string | null;
+  streak: number;
+  nextActions: Array<{
+    ctaLabel: string;
+    description: string;
+    href: Route;
+    title: string;
+  }>;
+  cards: Array<{
+    label: string;
+    value: string;
+    hint: string;
+  }>;
+  quickStats: Array<{
+    label: string;
+    value: string;
+  }>;
+  chartSeries: Array<{
+    date: string;
+    weight: number | null;
+    energy: number | null;
+    cravings: number | null;
+  }>;
+};
+
+export type DailyPageData = {
+  selectedDate: string;
+  timezone: string | null;
+  entry: DailyEntry | null;
+  checklistTemplates: ChecklistTemplate[];
+  checklistStates: DailyChecklist[];
+  dayTemplates: DayTemplate[];
+  settings: UserSettings | null;
+  supplementLogMeta: Array<{
+    active: boolean;
+    id: string;
+    slug: string;
+  }>;
+};
+
+export type SupplementsPageData = {
+  items: Array<
+    SupplementCatalog & {
+      userState: UserSupplement | null;
+      active: boolean;
+      effectiveDosage: string | null;
+      effectiveTiming: string | null;
+      effectiveNotes: string | null;
+    }
+  >;
+};
+
+export type NutritionPageData = {
+  mealTemplates: MealTemplate[];
+  settings: UserSettings | null;
+};
+
+export type PhasesPageData = {
+  phases: Array<
+    Phase & {
+      supplements: Array<
+        PhaseSupplement & {
+          supplement: SupplementCatalog | null;
+        }
+      >;
+    }
+  >;
+  currentPhaseSlug: string | null;
+};
+
+export type WeeklyReviewData = {
+  currentWeekStart: string;
+  averageWeight: number | null;
+  weightChange: number | null;
+  cravingsTrend: number | null;
+  energyTrend: number | null;
+  trainingSessions: number;
+  supplementCompliance: number;
+  suggestions: string[];
+  chartSeries: Array<{
+    date: string;
+    weight: number | null;
+    energy: number | null;
+    cravings: number | null;
+  }>;
+};
+
+export type SettingsPageData = {
+  settings: UserSettings | null;
+  phases: Phase[];
+  supplements: Array<
+    SupplementCatalog & {
+      active: boolean;
+      userState: UserSupplement | null;
+    }
+  >;
+};
+
+export async function getAppShellData(supabase: TypedSupabase, userId: string): Promise<AppShellData> {
+  const [{ data: profileData }, { data: settingsData }, { data: phasesData }] = await Promise.all([
+    supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
+    supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle(),
+    supabase.from("phases").select("*").order("sort_order", { ascending: true })
+  ]);
+
+  const profileRow = (profileData ?? null) as Profile | null;
+  const settingsRow = (settingsData ?? null) as UserSettings | null;
+  const phaseRows = (phasesData ?? []) as Phase[];
+  const currentPhase =
+    phaseRows.find((phase) => phase.slug === settingsRow?.current_phase_slug) ?? null;
+
+  return {
+    profile: profileRow,
+    settings: settingsRow,
+    currentPhase,
+    phaseDurationLabel: getPhaseDurationLabel(settingsRow, currentPhase, profileRow?.timezone)
+  };
+}
+
+export async function getDashboardData(
+  supabase: TypedSupabase,
+  userId: string
+): Promise<DashboardData> {
+  const appShell = await getAppShellData(supabase, userId);
+  const timezone = appShell.profile?.timezone ?? "Europe/Berlin";
+  const today = toDateInputValue(new Date(), timezone);
+  const sixtyDaysAgo = shiftDateKey(today, -59);
+  const fourteenDaysAgo = shiftDateKey(today, -13);
+  const sevenDaysAgo = shiftDateKey(today, -6);
+
+  const [
+    { data: entries },
+    { data: recentChecklists },
+    { data: checklistTemplates },
+    { data: supplementLogs },
+    { data: supplementCatalog },
+    { data: userSupplements }
+  ] = await Promise.all([
+    supabase
+      .from("daily_entries")
+      .select("*")
+      .eq("user_id", userId)
+      .gte("entry_date", sixtyDaysAgo)
+      .order("entry_date", { ascending: true }),
+    supabase
+      .from("daily_checklists")
+      .select("*")
+      .eq("user_id", userId)
+      .gte("entry_date", sixtyDaysAgo),
+    supabase.from("checklist_templates").select("*"),
+    supabase
+      .from("supplement_logs")
+      .select("*")
+      .eq("user_id", userId)
+      .gte("log_date", sevenDaysAgo),
+    supabase.from("supplement_catalog").select("id, slug, is_default_active"),
+    supabase.from("user_supplements").select("supplement_id, active").eq("user_id", userId)
+  ]);
+
+  const entryRows: DailyEntry[] = entries ?? [];
+  const checklistRows: DailyChecklist[] = recentChecklists ?? [];
+  const checklistTemplateRows: ChecklistTemplate[] = checklistTemplates ?? [];
+  const supplementLogRows: SupplementLog[] = supplementLogs ?? [];
+  const supplementCatalogRows: SupplementCatalogSummary[] = supplementCatalog ?? [];
+  const userSupplementRows: UserSupplementStatus[] = userSupplements ?? [];
+
+  const allEntries = entryRows;
+  const allChecklistRows = checklistRows;
+  const chartEntries = allEntries.filter((entry) => entry.entry_date >= fourteenDaysAgo);
+  const recentChecklistRows = allChecklistRows.filter((item) => item.entry_date >= sevenDaysAgo);
+  const allChecklistTemplates = checklistTemplateRows;
+  const supplementLogMeta = buildSupplementLogMeta(supplementCatalogRows, userSupplementRows);
+  const trackedSupplementIds = getTrackedSupplementIds(
+    allChecklistTemplates,
+    supplementLogMeta
+  );
+  const trackedSupplementIdSet = new Set(trackedSupplementIds);
+  const todayChecklists = recentChecklistRows.filter((item) => item.entry_date === today);
+  const todaySupplementLogs = supplementLogRows.filter(
+    (item) => item.log_date === today && trackedSupplementIdSet.has(item.supplement_id)
+  );
+  const todayEntry = allEntries.find((entry) => entry.entry_date === today) ?? null;
+  const currentWeekEntries = allEntries.filter((entry) => entry.entry_date >= sevenDaysAgo);
+  const previousWeekEntries = allEntries.filter(
+    (entry) => entry.entry_date >= fourteenDaysAgo && entry.entry_date < sevenDaysAgo
+  );
+  const completedTodayChecklistCount = todayChecklists.filter((item) => item.completed).length;
+  const completedTodaySupplementCount = todaySupplementLogs.filter((item) => item.completed).length;
+  const completedWeeklySupplementCount = supplementLogRows.filter(
+    (item) => item.completed && trackedSupplementIdSet.has(item.supplement_id)
+  ).length;
+  const plannedTrainingToday = (appShell.settings?.training_days ?? [1, 3, 5]).includes(
+    getDateKeyDayIndex(today)
+  );
+  const trainingCompliance = computeTrainingComplianceAgainstPlan(
+    currentWeekEntries,
+    appShell.settings?.training_days ?? [1, 3, 5],
+    today
+  );
+
+  const weightAverage = computeWeeklyWeightAverage(currentWeekEntries);
+  const cravingsTrend = computeTrendDelta(
+    currentWeekEntries.map((entry) => entry.cravings_score),
+    previousWeekEntries.map((entry) => entry.cravings_score)
+  );
+  const supplementCompliance = computeChecklistCompletionFromCount(
+    completedWeeklySupplementCount,
+    trackedSupplementIds.length * 7
+  );
+  const todayChecklistCompletion = computeChecklistCompletionFromCount(
+    completedTodayChecklistCount,
+    allChecklistTemplates.length
+  );
+  const todaySupplementCompletion = computeChecklistCompletionFromCount(
+    completedTodaySupplementCount,
+    trackedSupplementIds.length || 1
+  );
+  const nextActionState = buildDashboardNextActions({
+    currentPhase: appShell.currentPhase,
+    plannedTrainingToday,
+    todayChecklistCompletion,
+    todayEntry,
+    todaySupplementCompletion,
+    trackedSupplementCount: trackedSupplementIds.length
+  });
+
+  return {
+    dateLabel: today,
+    todayEntry,
+    todayChecklistCompletion,
+    openLoopCount: nextActionState.openLoopCount,
+    statusLabel:
+      todayEntry || todayChecklists.length === 0
+        ? resolveEntryStatus(todayEntry)
+        : "Checkliste läuft",
+    currentPhase: appShell.currentPhase,
+    phaseDurationLabel: appShell.phaseDurationLabel,
+    streak: computeStreak(
+      allEntries.map((entry) => entry.entry_date),
+      allChecklistRows,
+      timezone,
+      3
+    ),
+    nextActions: nextActionState.actions,
+    cards: [
+      {
+        label: "Wochenschnitt Gewicht",
+        value: weightAverage !== null ? `${weightAverage.toFixed(1)} kg` : "Keine Daten",
+        hint: "7 Tage"
+      },
+      {
+        label: "Cravings-Trend",
+        value: cravingsTrend === null ? "Keine Daten" : `${cravingsTrend > 0 ? "+" : ""}${cravingsTrend.toFixed(1)}`,
+        hint: "vs. Vorwoche"
+      },
+      {
+        label: "Trainings-Compliance",
+        value: `${trainingCompliance}%`,
+        hint: "Letzte 7 Tage"
+      },
+      {
+        label: "Supplement-Compliance",
+        value: `${supplementCompliance}%`,
+        hint: "Letzte 7 Tage"
+      }
+    ],
+    quickStats: [
+      {
+        label: "Gewicht",
+        value:
+          todayEntry?.body_weight !== null && todayEntry?.body_weight !== undefined
+            ? `${todayEntry.body_weight.toFixed(1)} kg`
+            : "Offen"
+      },
+      {
+        label: "Schlaf",
+        value:
+          todayEntry?.sleep_score !== null && todayEntry?.sleep_score !== undefined
+            ? `${todayEntry.sleep_score}/10`
+            : "Offen"
+      },
+      {
+        label: "Energie",
+        value:
+          todayEntry?.energy_score !== null && todayEntry?.energy_score !== undefined
+            ? `${todayEntry.energy_score}/10`
+            : "Offen"
+      },
+      {
+        label: "Cravings",
+        value:
+          todayEntry?.cravings_score !== null && todayEntry?.cravings_score !== undefined
+            ? `${todayEntry.cravings_score}/10`
+            : "Offen"
+      },
+      {
+        label: "Training",
+        value: todayEntry ? (todayEntry.training_completed ? "Ja" : "Nein") : "Offen"
+      },
+      {
+        label: "Kalorien",
+        value:
+          todayEntry?.calories !== null && todayEntry?.calories !== undefined
+            ? `${todayEntry.calories}`
+            : "Offen"
+      }
+    ],
+    chartSeries: toChartSeries(chartEntries)
+  };
+}
+
+export async function getDailyPageData(
+  supabase: TypedSupabase,
+  userId: string,
+  selectedDate?: string
+): Promise<DailyPageData> {
+  const { data: profileTimezoneData } = await supabase
+    .from("profiles")
+    .select("timezone")
+    .eq("id", userId)
+    .maybeSingle();
+  const profileTimezoneRow = (profileTimezoneData ?? null) as Pick<Profile, "timezone"> | null;
+  const timezone = profileTimezoneRow?.timezone ?? "Europe/Berlin";
+
+  const effectiveSelectedDate =
+    selectedDate && isDateKey(selectedDate)
+      ? selectedDate
+      : toDateInputValue(new Date(), timezone);
+
+  const [
+    { data: entry },
+    { data: checklistTemplates },
+    { data: checklistStates },
+    { data: dayTemplates },
+    { data: settings },
+    { data: supplementCatalog },
+    { data: userSupplements }
+  ] =
+    await Promise.all([
+      supabase
+        .from("daily_entries")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("entry_date", effectiveSelectedDate)
+        .maybeSingle(),
+      supabase.from("checklist_templates").select("*").order("sort_order", { ascending: true }),
+      supabase
+        .from("daily_checklists")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("entry_date", effectiveSelectedDate),
+      supabase.from("day_templates").select("*").order("title", { ascending: true }),
+      supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle(),
+    supabase.from("supplement_catalog").select("id, slug, is_default_active"),
+    supabase.from("user_supplements").select("supplement_id, active").eq("user_id", userId)
+    ]);
+
+  const entryRow: DailyEntry | null = entry ?? null;
+  const checklistTemplateRows: ChecklistTemplate[] = checklistTemplates ?? [];
+  const checklistStateRows: DailyChecklist[] = checklistStates ?? [];
+  const dayTemplateRows: DayTemplate[] = dayTemplates ?? [];
+  const settingsRow: UserSettings | null = settings ?? null;
+  const supplementCatalogRows: SupplementCatalogSummary[] = supplementCatalog ?? [];
+  const userSupplementRows: UserSupplementStatus[] = userSupplements ?? [];
+
+  return {
+    selectedDate: effectiveSelectedDate,
+    timezone,
+    entry: entryRow,
+    checklistTemplates: checklistTemplateRows,
+    checklistStates: checklistStateRows,
+    dayTemplates: dayTemplateRows,
+    settings: settingsRow,
+    supplementLogMeta: buildSupplementLogMeta(supplementCatalogRows, userSupplementRows)
+  };
+}
+
+export async function getSupplementsPageData(
+  supabase: TypedSupabase,
+  userId: string
+): Promise<SupplementsPageData> {
+  const [{ data: catalog }, { data: userSupplements }] = await Promise.all([
+    supabase.from("supplement_catalog").select("*").order("sort_order", { ascending: true }),
+    supabase.from("user_supplements").select("*").eq("user_id", userId)
+  ]);
+
+  const catalogRows: SupplementCatalog[] = catalog ?? [];
+  const userSupplementRows: UserSupplement[] = userSupplements ?? [];
+  const userStateMap = new Map(userSupplementRows.map((item) => [item.supplement_id, item]));
+
+  return {
+    items: catalogRows.map((supplement) => {
+      const userState = userStateMap.get(supplement.id) ?? null;
+      return {
+        ...supplement,
+        userState,
+        active: userState?.active ?? supplement.is_default_active,
+        effectiveDosage: userState?.custom_dosage ?? supplement.dosage,
+        effectiveTiming: userState?.custom_timing ?? supplement.timing,
+        effectiveNotes: userState?.notes ?? null
+      };
+    })
+  };
+}
+
+export async function getNutritionPageData(
+  supabase: TypedSupabase,
+  userId: string
+): Promise<NutritionPageData> {
+  const [{ data: templates }, { data: settings }] = await Promise.all([
+    supabase
+      .from("meal_templates")
+      .select("*")
+      .or(`user_id.is.null,user_id.eq.${userId}`)
+      .order("sort_order", { ascending: true }),
+    supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle()
+  ]);
+
+  const templateRows: MealTemplate[] = templates ?? [];
+  const settingsRow: UserSettings | null = settings ?? null;
+  const merged = new Map<string, MealTemplate>();
+  for (const template of templateRows) {
+    const existing = merged.get(template.template_key);
+    if (!existing || template.user_id === userId) {
+      merged.set(template.template_key, template);
+    }
+  }
+
+  return {
+    mealTemplates: [...merged.values()].sort((left, right) => left.sort_order - right.sort_order),
+    settings: settingsRow
+  };
+}
+
+export async function getPhasesPageData(
+  supabase: TypedSupabase,
+  userId: string
+): Promise<PhasesPageData> {
+  const [
+    { data: phases },
+    { data: phaseSupplements },
+    { data: supplements },
+    { data: settingsData }
+  ] = await Promise.all([
+      supabase.from("phases").select("*").order("sort_order", { ascending: true }),
+      supabase.from("phase_supplements").select("*").order("sort_order", { ascending: true }),
+      supabase.from("supplement_catalog").select("*"),
+      supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle()
+    ]);
+
+  const phaseRows: Phase[] = phases ?? [];
+  const phaseSupplementRows: PhaseSupplement[] = phaseSupplements ?? [];
+  const supplementRows: SupplementCatalog[] = supplements ?? [];
+  const settingsRow = (settingsData ?? null) as UserSettings | null;
+  const supplementMap = new Map(supplementRows.map((item) => [item.id, item]));
+
+  return {
+    phases: phaseRows.map((phase) => ({
+      ...phase,
+      supplements: phaseSupplementRows
+        .filter((item) => item.phase_id === phase.id)
+        .map((item) => ({
+          ...item,
+          supplement: supplementMap.get(item.supplement_id) ?? null
+        }))
+    })),
+    currentPhaseSlug: settingsRow?.current_phase_slug ?? null
+  };
+}
+
+export async function getWeeklyReviewData(
+  supabase: TypedSupabase,
+  userId: string
+): Promise<WeeklyReviewData> {
+  const { data: profileTimezoneData } = await supabase
+    .from("profiles")
+    .select("timezone")
+    .eq("id", userId)
+    .maybeSingle();
+  const profileTimezoneRow = (profileTimezoneData ?? null) as Pick<Profile, "timezone"> | null;
+  const timezone = profileTimezoneRow?.timezone ?? "Europe/Berlin";
+
+  const today = toDateInputValue(new Date(), timezone);
+  const currentWeekStart = startOfWeekDateKey(today, 1);
+  const previousWeekStart = shiftDateKey(currentWeekStart, -7);
+  const currentWeekEnd = endOfWeekDateKey(today, 1);
+
+  const [
+    { data: entries },
+    { data: supplementLogs },
+    { data: checklistTemplates },
+    { data: supplementCatalog },
+    { data: userSupplements }
+  ] = await Promise.all([
+    supabase
+      .from("daily_entries")
+      .select("*")
+      .eq("user_id", userId)
+      .gte("entry_date", previousWeekStart)
+      .lte("entry_date", currentWeekEnd)
+      .order("entry_date", { ascending: true }),
+    supabase
+      .from("supplement_logs")
+      .select("*")
+      .eq("user_id", userId)
+      .gte("log_date", currentWeekStart)
+      .lte("log_date", currentWeekEnd),
+    supabase.from("checklist_templates").select("*"),
+    supabase.from("supplement_catalog").select("id, slug, is_default_active"),
+    supabase.from("user_supplements").select("supplement_id, active").eq("user_id", userId)
+  ]);
+
+  const entryRows: DailyEntry[] = entries ?? [];
+  const supplementLogRows: SupplementLog[] = supplementLogs ?? [];
+  const checklistTemplateRows: ChecklistTemplate[] = checklistTemplates ?? [];
+  const supplementCatalogRows: SupplementCatalogSummary[] = supplementCatalog ?? [];
+  const userSupplementRows: UserSupplementStatus[] = userSupplements ?? [];
+
+  const currentEntries = entryRows.filter(
+    (entry) => entry.entry_date >= currentWeekStart
+  );
+  const previousEntries = entryRows.filter(
+    (entry) =>
+      entry.entry_date >= previousWeekStart &&
+      entry.entry_date < currentWeekStart
+  );
+
+  const averageWeight = computeWeeklyWeightAverage(currentEntries);
+  const previousWeight = computeWeeklyWeightAverage(previousEntries);
+  const weightChange =
+    averageWeight !== null && previousWeight !== null ? averageWeight - previousWeight : null;
+  const cravingsAverage = average(currentEntries.map((entry) => entry.cravings_score));
+  const sleepAverage = average(currentEntries.map((entry) => entry.sleep_score));
+  const energyAverage = average(currentEntries.map((entry) => entry.energy_score));
+  const elapsedDaysInWeek = differenceInDateKeys(today, currentWeekStart) + 1;
+  const supplementLogMeta = buildSupplementLogMeta(supplementCatalogRows, userSupplementRows);
+  const trackedSupplementIds = getTrackedSupplementIds(
+    checklistTemplateRows,
+    supplementLogMeta
+  );
+  const trackedSupplementIdSet = new Set(trackedSupplementIds);
+  const supplementCompliance = computeChecklistCompletionFromCount(
+    supplementLogRows.filter(
+      (item) => item.completed && trackedSupplementIdSet.has(item.supplement_id)
+    ).length,
+    trackedSupplementIds.length * elapsedDaysInWeek
+  );
+
+  return {
+    currentWeekStart,
+    averageWeight,
+    weightChange,
+    cravingsTrend: computeTrendDelta(
+      currentEntries.map((entry) => entry.cravings_score),
+      previousEntries.map((entry) => entry.cravings_score)
+    ),
+    energyTrend: computeTrendDelta(
+      currentEntries.map((entry) => entry.energy_score),
+      previousEntries.map((entry) => entry.energy_score)
+    ),
+    trainingSessions: currentEntries.filter((entry) => entry.training_completed).length,
+    supplementCompliance,
+    suggestions: buildWeeklySuggestions({
+      averageWeightChange: weightChange,
+      cravingsAverage,
+      sleepAverage,
+      energyAverage
+    }),
+    chartSeries: toChartSeries(currentEntries)
+  };
+}
+
+export async function getSettingsPageData(
+  supabase: TypedSupabase,
+  userId: string
+): Promise<SettingsPageData> {
+  const [{ data: settings }, { data: phases }, { data: supplements }, { data: userSupplements }] =
+    await Promise.all([
+      supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle(),
+      supabase.from("phases").select("*").order("sort_order", { ascending: true }),
+      supabase.from("supplement_catalog").select("*").order("sort_order", { ascending: true }),
+      supabase.from("user_supplements").select("*").eq("user_id", userId)
+    ]);
+
+  const settingsRow: UserSettings | null = settings ?? null;
+  const phaseRows: Phase[] = phases ?? [];
+  const supplementRows: SupplementCatalog[] = supplements ?? [];
+  const userSupplementRows: UserSupplement[] = userSupplements ?? [];
+  const userStateMap = new Map(userSupplementRows.map((item) => [item.supplement_id, item]));
+
+  return {
+    settings: settingsRow,
+    phases: phaseRows,
+    supplements: supplementRows.map((supplement) => ({
+      ...supplement,
+      active: userStateMap.get(supplement.id)?.active ?? supplement.is_default_active,
+      userState: userStateMap.get(supplement.id) ?? null
+    }))
+  };
+}
+
+export function complianceLabel(value: number) {
+  if (value >= 85) {
+    return "Sehr stark";
+  }
+  if (value >= 65) {
+    return "Solide";
+  }
+  return "Verbesserbar";
+}
+
+export function currentPhaseLabel(currentPhase: Phase | null) {
+  return currentPhase ? currentPhase.name : "Keine Phase gesetzt";
+}
+
+export function getPhaseDurationLabel(
+  settings: UserSettings | null,
+  currentPhase: Phase | null,
+  timezone?: string | null
+) {
+  if (!currentPhase || !settings?.phase_started_at) {
+    return null;
+  }
+
+  const activeDays = daysSince(settings.phase_started_at, timezone);
+  return `seit ${activeDays} ${activeDays === 1 ? "Tag" : "Tagen"}`;
+}
+
+export function reviewComparisonLabel(value: number | null, unit = "") {
+  if (value === null) {
+    return "Keine Daten";
+  }
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}${unit}`;
+}
+
+export function reviewTrainingHint(count: number) {
+  if (count >= 4) {
+    return "Starke Compliance";
+  }
+  if (count >= 2) {
+    return "Solide Woche";
+  }
+  return "Mehr Struktur einplanen";
+}
+
+function computeTrainingComplianceAgainstPlan(
+  entries: DailyEntry[],
+  trainingDays: number[],
+  referenceDateKey: string
+) {
+  if (!trainingDays.length) {
+    return 0;
+  }
+
+  const completedTrainingCount = entries.filter((entry) => entry.training_completed).length;
+  const plannedTrainingCount = Array.from({ length: 7 }, (_, index) =>
+    getDateKeyDayIndex(shiftDateKey(referenceDateKey, -index))
+  ).filter((dayIndex) => trainingDays.includes(dayIndex)).length;
+
+  return computeChecklistCompletionFromCount(
+    completedTrainingCount,
+    plannedTrainingCount || 1
+  );
+}
+
+function countMissingCoreMetrics(entry: DailyEntry | null) {
+  if (!entry) {
+    return 5;
+  }
+
+  return [
+    entry.body_weight,
+    entry.sleep_score,
+    entry.energy_score,
+    entry.cravings_score,
+    entry.calories
+  ].filter((value) => value === null || value === undefined).length;
+}
+
+function buildDashboardNextActions({
+  currentPhase,
+  plannedTrainingToday,
+  todayChecklistCompletion,
+  todayEntry,
+  todaySupplementCompletion,
+  trackedSupplementCount
+}: {
+  currentPhase: Phase | null;
+  plannedTrainingToday: boolean;
+  todayChecklistCompletion: number;
+  todayEntry: DailyEntry | null;
+  todaySupplementCompletion: number;
+  trackedSupplementCount: number;
+}) {
+  const actions: DashboardData["nextActions"] = [];
+  const missingCoreMetrics = countMissingCoreMetrics(todayEntry);
+
+  if (!todayEntry) {
+    actions.push({
+      ctaLabel: "Daily öffnen",
+      description: "Gewicht, Scores und Kalorien einmal sauber eintragen, dann steht der Tag.",
+      href: "/daily" as Route,
+      title: "Daily Capture starten"
+    });
+  } else if (missingCoreMetrics > 0) {
+    actions.push({
+      ctaLabel: "Eintrag vervollständigen",
+      description: `${missingCoreMetrics} Kernwerte fehlen noch für einen vollständigen Tag.`,
+      href: "/daily" as Route,
+      title: "Metrics fertig machen"
+    });
+  }
+
+  if (todayChecklistCompletion < 100) {
+    actions.push({
+      ctaLabel: "Checklisten abhaken",
+      description: `${100 - todayChecklistCompletion}% des Tages-Setups sind noch offen.`,
+      href: "/daily" as Route,
+      title: "Heute noch offen"
+    });
+  }
+
+  if (plannedTrainingToday && !todayEntry?.training_completed) {
+    actions.push({
+      ctaLabel: "Training loggen",
+      description: "Heute ist ein geplanter Trainingstag. Haken direkt im Daily setzen.",
+      href: "/daily" as Route,
+      title: "Training bestätigen"
+    });
+  }
+
+  if (!currentPhase) {
+    actions.push({
+      ctaLabel: "Phase wählen",
+      description: "Ohne aktive Phase fehlen Kontext und Framing im Dashboard und im App-Shell-Header.",
+      href: "/phases" as Route,
+      title: "Phase festlegen"
+    });
+  }
+
+  if (trackedSupplementCount > 0 && todaySupplementCompletion < 100 && actions.length < 3) {
+    actions.push({
+      ctaLabel: "Stack prüfen",
+      description: "Supplement-Logs hängen an den Checklisten. Ein kurzer Check hält die Compliance sauber.",
+      href: "/daily" as Route,
+      title: "Supplements abschließen"
+    });
+  }
+
+  const openLoopCount = actions.length;
+
+  if (!actions.length) {
+    actions.push({
+      ctaLabel: "Wochenreview öffnen",
+      description: "Heute ist sauber erfasst. Der nächste sinnvolle Schritt ist der Blick auf den Wochenverlauf.",
+      href: "/weekly-review" as Route,
+      title: "Alles im grünen Bereich"
+    });
+  }
+
+  return {
+    actions: actions.slice(0, 3),
+    openLoopCount
+  };
+}
+
+function buildSupplementLogMeta(
+  supplementCatalog: Array<
+    Pick<SupplementCatalog, "id" | "slug" | "is_default_active">
+  >,
+  userSupplements: Array<Pick<UserSupplement, "supplement_id" | "active">>
+) {
+  const supplementStateMap = new Map(
+    userSupplements.map((supplement) => [supplement.supplement_id, supplement])
+  );
+
+  return supplementCatalog.map((supplement) => ({
+    active:
+      supplementStateMap.get(supplement.id)?.active ?? supplement.is_default_active,
+    id: supplement.id,
+    slug: supplement.slug
+  }));
+}
