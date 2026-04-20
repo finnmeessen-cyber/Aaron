@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { parse as parseCsv } from "csv-parse/sync";
-import { differenceInMinutes, format, isValid, parse } from "date-fns";
+import { differenceInMinutes, isValid, parse, parseISO } from "date-fns";
 import { enUS } from "date-fns/locale";
 
 import {
@@ -21,12 +21,62 @@ const HEVY_HEADER_ALIASES: Record<HevyRequiredColumn, string[]> = {
 };
 
 const HEVY_DATE_FORMATS = [
-  "dd MMM yyyy, HH:mm",
   "d MMM yyyy, HH:mm",
+  "dd MMM yyyy, HH:mm",
+  "d MMM yyyy, H:mm",
+  "dd MMM yyyy, H:mm",
+  "d MMM yyyy, HH:mm:ss",
+  "dd MMM yyyy, HH:mm:ss",
+  "d MMMM yyyy, HH:mm",
+  "dd MMMM yyyy, HH:mm",
+  "d MMMM yyyy, H:mm",
+  "dd MMMM yyyy, H:mm",
+  "d MMMM yyyy, HH:mm:ss",
+  "dd MMMM yyyy, HH:mm:ss",
+  "MMM d yyyy, HH:mm",
+  "MMM d, yyyy, HH:mm",
+  "MMM d yyyy, H:mm",
+  "MMM d, yyyy, H:mm",
+  "MMMM d yyyy, HH:mm",
+  "MMMM d, yyyy, HH:mm",
+  "MMMM d yyyy, H:mm",
+  "MMMM d, yyyy, H:mm",
+  "MMM d yyyy, h:mm a",
+  "MMM d, yyyy, h:mm a",
+  "MMMM d yyyy, h:mm a",
+  "MMMM d, yyyy, h:mm a",
+  "MMM d yyyy, hh:mm a",
+  "MMM d, yyyy, hh:mm a",
+  "MMMM d yyyy, hh:mm a",
+  "MMMM d, yyyy, hh:mm a",
+  "d/M/yyyy, HH:mm",
+  "dd/MM/yyyy, HH:mm",
+  "d/M/yyyy HH:mm",
+  "dd/MM/yyyy HH:mm",
+  "d/M/yyyy, H:mm",
+  "dd/MM/yyyy, H:mm",
+  "d.M.yyyy, HH:mm",
+  "dd.MM.yyyy, HH:mm",
+  "d.M.yyyy HH:mm",
+  "dd.MM.yyyy HH:mm",
+  "M/d/yyyy, HH:mm",
+  "MM/dd/yyyy, HH:mm",
+  "M/d/yyyy HH:mm",
+  "MM/dd/yyyy HH:mm",
+  "M/d/yyyy, h:mm a",
+  "MM/dd/yyyy, h:mm a",
+  "M/d/yyyy h:mm a",
+  "MM/dd/yyyy h:mm a",
   "yyyy-MM-dd HH:mm:ss",
   "yyyy-MM-dd HH:mm",
   "yyyy-MM-dd'T'HH:mm:ss",
   "yyyy-MM-dd'T'HH:mm"
+] as const;
+
+const HEVY_TIMESTAMP_EXAMPLES = [
+  "21 Apr 2026, 18:30",
+  "Apr 21, 2026, 6:30 PM",
+  "21/04/2026 18:30"
 ] as const;
 
 type ParsedTimestamp = {
@@ -124,13 +174,24 @@ function parseHevyTimestamp(
   columnName: HevyRequiredColumn
 ): ParsedTimestamp {
   const trimmedValue = value.trim();
+  const normalizedValue = trimmedValue
+    .replace(/^"|"$/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*,\s*/g, ", ");
 
   if (!trimmedValue) {
     throw new HevyImportError(`Row ${rowNumber} is missing a value for ${columnName}.`);
   }
 
+  const hasExplicitOffset = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(normalizedValue);
+  const isoCandidate = hasExplicitOffset ? parseISO(normalizedValue) : null;
+
+  if (isoCandidate && isValid(isoCandidate)) {
+    return buildOffsetAwareTimestamp(isoCandidate);
+  }
+
   for (const dateFormat of HEVY_DATE_FORMATS) {
-    const parsedDate = parse(trimmedValue, dateFormat, new Date(), {
+    const parsedDate = parse(normalizedValue, dateFormat, new Date(), {
       locale: enUS
     });
 
@@ -138,29 +199,43 @@ function parseHevyTimestamp(
       continue;
     }
 
-    // Hevy exports naive local timestamps, so we persist the same wall-clock values in UTC
-    // to avoid server-timezone-dependent drift when deriving dates and durations.
-    const stableUtcDate = new Date(
-      Date.UTC(
-        parsedDate.getFullYear(),
-        parsedDate.getMonth(),
-        parsedDate.getDate(),
-        parsedDate.getHours(),
-        parsedDate.getMinutes(),
-        parsedDate.getSeconds()
-      )
-    );
-
-    return {
-      date: stableUtcDate,
-      dateKey: format(parsedDate, "yyyy-MM-dd"),
-      iso: stableUtcDate.toISOString()
-    };
+    return buildWallClockTimestamp(parsedDate);
   }
 
   throw new HevyImportError(
-    `Row ${rowNumber} has an invalid ${columnName} value: "${trimmedValue}".`
+    `Row ${rowNumber} has an invalid ${columnName} value: "${trimmedValue}". Expected a timestamp like ${HEVY_TIMESTAMP_EXAMPLES.map((example) => `"${example}"`).join(", ")}.`
   );
+}
+
+function buildWallClockTimestamp(parsedDate: Date): ParsedTimestamp {
+  // Hevy exports naive local timestamps in many human-readable formats. We normalize the
+  // parsed wall-clock date into UTC so grouping, duration, and workout_date remain stable
+  // regardless of the server timezone.
+  const stableUtcDate = new Date(
+    Date.UTC(
+      parsedDate.getFullYear(),
+      parsedDate.getMonth(),
+      parsedDate.getDate(),
+      parsedDate.getHours(),
+      parsedDate.getMinutes(),
+      parsedDate.getSeconds(),
+      parsedDate.getMilliseconds()
+    )
+  );
+
+  return {
+    date: stableUtcDate,
+    dateKey: stableUtcDate.toISOString().slice(0, 10),
+    iso: stableUtcDate.toISOString()
+  };
+}
+
+function buildOffsetAwareTimestamp(parsedDate: Date): ParsedTimestamp {
+  return {
+    date: parsedDate,
+    dateKey: parsedDate.toISOString().slice(0, 10),
+    iso: parsedDate.toISOString()
+  };
 }
 
 function buildWorkoutGroupKey(row: ParsedHevyCsvRow, startedAtIso: string, endedAtIso: string) {
