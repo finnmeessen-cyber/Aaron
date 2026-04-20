@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { parse as parseCsv } from "csv-parse/sync";
 import { differenceInMinutes, isValid, parse, parseISO } from "date-fns";
-import { enUS } from "date-fns/locale";
+import { de, enUS } from "date-fns/locale";
 
 import {
   HEVY_REQUIRED_COLUMNS,
@@ -28,16 +28,36 @@ const HEVY_DELIMITER_OPTIONS = [
 const HEVY_DATE_FORMATS = [
   "d MMM yyyy, HH:mm",
   "dd MMM yyyy, HH:mm",
+  "d. MMM yyyy, HH:mm",
+  "dd. MMM yyyy, HH:mm",
   "d MMM yyyy, H:mm",
   "dd MMM yyyy, H:mm",
+  "d. MMM yyyy, H:mm",
+  "dd. MMM yyyy, H:mm",
   "d MMM yyyy, HH:mm:ss",
   "dd MMM yyyy, HH:mm:ss",
+  "d. MMM yyyy, HH:mm:ss",
+  "dd. MMM yyyy, HH:mm:ss",
+  "d MMM yyyy HH:mm",
+  "dd MMM yyyy HH:mm",
+  "d. MMM yyyy HH:mm",
+  "dd. MMM yyyy HH:mm",
   "d MMMM yyyy, HH:mm",
   "dd MMMM yyyy, HH:mm",
+  "d. MMMM yyyy, HH:mm",
+  "dd. MMMM yyyy, HH:mm",
   "d MMMM yyyy, H:mm",
   "dd MMMM yyyy, H:mm",
+  "d. MMMM yyyy, H:mm",
+  "dd. MMMM yyyy, H:mm",
   "d MMMM yyyy, HH:mm:ss",
   "dd MMMM yyyy, HH:mm:ss",
+  "d. MMMM yyyy, HH:mm:ss",
+  "dd. MMMM yyyy, HH:mm:ss",
+  "d MMMM yyyy HH:mm",
+  "dd MMMM yyyy HH:mm",
+  "d. MMMM yyyy HH:mm",
+  "dd. MMMM yyyy HH:mm",
   "MMM d yyyy, HH:mm",
   "MMM d, yyyy, HH:mm",
   "MMM d yyyy, H:mm",
@@ -77,10 +97,12 @@ const HEVY_DATE_FORMATS = [
   "yyyy-MM-dd'T'HH:mm:ss",
   "yyyy-MM-dd'T'HH:mm"
 ] as const;
+const HEVY_DATE_LOCALES = [enUS, de] as const;
 
 const HEVY_TIMESTAMP_EXAMPLES = [
-  "21 Apr 2026, 18:30",
-  "Apr 21, 2026, 6:30 PM",
+  "28 März 2026, 12:32",
+  "28 Mar 2026, 12:32",
+  "28. März 2026, 12:32",
   "21/04/2026 18:30"
 ] as const;
 
@@ -281,15 +303,17 @@ function parseHevyTimestamp(
   }
 
   for (const dateFormat of HEVY_DATE_FORMATS) {
-    const parsedDate = parse(normalizedValue, dateFormat, new Date(), {
-      locale: enUS
-    });
+    for (const locale of HEVY_DATE_LOCALES) {
+      const parsedDate = parse(normalizedValue, dateFormat, new Date(), {
+        locale
+      });
 
-    if (!isValid(parsedDate)) {
-      continue;
+      if (!isValid(parsedDate)) {
+        continue;
+      }
+
+      return buildWallClockTimestamp(parsedDate);
     }
-
-    return buildWallClockTimestamp(parsedDate);
   }
 
   throw new HevyImportError(
