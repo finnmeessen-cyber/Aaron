@@ -19,6 +19,11 @@ const HEVY_HEADER_ALIASES: Record<HevyRequiredColumn, string[]> = {
   start_time: ["start_time", "start time", "started_at", "started at", "start"],
   title: ["title", "workout_title", "workout title", "workout_name", "workout name", "workout"]
 };
+const HEVY_DELIMITER_OPTIONS = [
+  { label: "tab", value: "\t" },
+  { label: "comma", value: "," },
+  { label: "semicolon", value: ";" }
+] as const;
 
 const HEVY_DATE_FORMATS = [
   "d MMM yyyy, HH:mm",
@@ -84,6 +89,12 @@ type ParsedTimestamp = {
   dateKey: string;
   iso: string;
 };
+type HevyDelimiter = (typeof HEVY_DELIMITER_OPTIONS)[number]["value"];
+type DelimiterDetectionResult = {
+  delimiter: HevyDelimiter;
+  headers: string[];
+  label: (typeof HEVY_DELIMITER_OPTIONS)[number]["label"];
+};
 
 export class HevyImportError extends Error {
   status: number;
@@ -112,9 +123,10 @@ function normalizeHeader(value: string) {
     .replace(/^_+|_+$/g, "");
 }
 
-function getCsvHeaders(fileText: string) {
+function parseHeaderRow(fileText: string, delimiter: HevyDelimiter) {
   const rows = parseCsv(fileText, {
     bom: true,
+    delimiter,
     relax_column_count: true,
     skip_empty_lines: true,
     to_line: 1,
@@ -130,21 +142,42 @@ function toCsvRecord(record: Record<string, unknown>) {
   ) as HevyCsvRecord;
 }
 
-function resolveRequiredColumns(headers: string[]): HevyHeaderMap {
-  if (!headers.length) {
-    throw new HevyImportError("The uploaded file is missing a CSV header row.");
-  }
-
+function createNormalizedHeaderMap(headers: string[]) {
   const normalizedToOriginal = new Map<string, string>();
 
   for (const header of headers) {
     normalizedToOriginal.set(normalizeHeader(header), header);
   }
 
+  return normalizedToOriginal;
+}
+
+function resolveRequiredColumn(
+  headers: Map<string, string>,
+  column: HevyRequiredColumn
+) {
+  return HEVY_HEADER_ALIASES[column]
+    .map((alias) => headers.get(normalizeHeader(alias)))
+    .find((value): value is string => Boolean(value));
+}
+
+function countResolvedRequiredColumns(headers: string[]) {
+  const normalizedToOriginal = createNormalizedHeaderMap(headers);
+
+  return HEVY_REQUIRED_COLUMNS.filter((column) =>
+    Boolean(resolveRequiredColumn(normalizedToOriginal, column))
+  ).length;
+}
+
+function resolveRequiredColumns(headers: string[]): HevyHeaderMap {
+  if (!headers.length) {
+    throw new HevyImportError("The uploaded file is missing a header row.");
+  }
+
+  const normalizedToOriginal = createNormalizedHeaderMap(headers);
+
   const resolvedEntries = HEVY_REQUIRED_COLUMNS.map((column) => {
-    const resolvedHeader = HEVY_HEADER_ALIASES[column]
-      .map((alias) => normalizedToOriginal.get(normalizeHeader(alias)))
-      .find((value): value is string => Boolean(value));
+    const resolvedHeader = resolveRequiredColumn(normalizedToOriginal, column);
 
     if (!resolvedHeader) {
       return null;
@@ -166,6 +199,63 @@ function resolveRequiredColumns(headers: string[]): HevyHeaderMap {
   );
 
   return Object.fromEntries(resolvedColumns) as HevyHeaderMap;
+}
+
+function detectHevyDelimiter(fileText: string): DelimiterDetectionResult {
+  let bestMatch: DelimiterDetectionResult & { matchedColumns: number } | null = null;
+
+  for (const delimiterOption of HEVY_DELIMITER_OPTIONS) {
+    try {
+      const headers = parseHeaderRow(fileText, delimiterOption.value);
+
+      if (!headers.length) {
+        continue;
+      }
+
+      const matchedColumns = countResolvedRequiredColumns(headers);
+      const match = {
+        delimiter: delimiterOption.value,
+        headers,
+        label: delimiterOption.label,
+        matchedColumns
+      };
+
+      if (matchedColumns === HEVY_REQUIRED_COLUMNS.length) {
+        return match;
+      }
+
+      if (!bestMatch || matchedColumns > bestMatch.matchedColumns) {
+        bestMatch = match;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  if (bestMatch && bestMatch.matchedColumns > 0) {
+    return bestMatch;
+  }
+
+  throw new HevyImportError(
+    "Unable to detect the file structure. Expected a tab-, comma-, or semicolon-delimited Hevy export with title, start_time, and end_time headers."
+  );
+}
+
+function parseDelimitedRecords(fileText: string, delimiter: HevyDelimiter, delimiterLabel: string) {
+  try {
+    return parseCsv(fileText, {
+      bom: true,
+      columns: true,
+      delimiter,
+      relax_column_count: true,
+      skip_empty_lines: true,
+      trim: true
+    }) as Array<Record<string, unknown>>;
+  } catch {
+    throw new HevyImportError(
+      `Unable to parse the uploaded ${delimiterLabel}-delimited file. Please re-export the Hevy file and try again.`
+    );
+  }
 }
 
 function parseHevyTimestamp(
@@ -289,15 +379,9 @@ export function parseHevyCsv(fileText: string): ParseHevyCsvResult {
   }
 
   try {
-    const headers = getCsvHeaders(fileText);
+    const { delimiter, headers, label } = detectHevyDelimiter(fileText);
     const requiredColumns = resolveRequiredColumns(headers);
-    const rawRecords = parseCsv(fileText, {
-      bom: true,
-      columns: true,
-      relax_column_count: true,
-      skip_empty_lines: true,
-      trim: true
-    }) as Array<Record<string, unknown>>;
+    const rawRecords = parseDelimitedRecords(fileText, delimiter, label);
 
     if (!rawRecords.length) {
       throw new HevyImportError("The uploaded CSV does not contain any workout rows.");
