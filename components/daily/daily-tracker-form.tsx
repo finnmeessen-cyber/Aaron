@@ -7,8 +7,10 @@ import { ClipboardPaste, Copy } from "lucide-react";
 
 import { DailyChecklistPanel } from "@/components/daily/daily-checklist-panel";
 import { DailyMetricsPanel } from "@/components/daily/daily-metrics-panel";
+import { DailyTodoList } from "@/components/daily/daily-todo-list";
 import { HevyCsvUpload } from "@/components/hevy/hevy-csv-upload";
 import { Button } from "@/components/ui/button";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { StatusMessage } from "@/components/ui/status-message";
@@ -549,13 +551,22 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         <StatusMessage tone={status.tone} message={status.message} />
       </Card>
 
-      <HevyCsvUpload
-        variant="compact"
-        title="Hevy CSV importieren"
-        description="Lade deinen Hevy-Export hoch, um Trainingstage automatisch zu markieren."
-        hint="Funktioniert auch rückwirkend für ältere Workouts aus deinem Export."
-        onImported={() => router.refresh()}
+      <DailyTodoList
+        dayType={form.day_type}
+        selectedDate={selectedDate}
+        supplementCount={props.supplementLogMeta.length}
+        timezone={props.timezone}
       />
+
+      <CollapsibleSection title="Weitere Aktionen">
+        <HevyCsvUpload
+          variant="compact"
+          title="Hevy CSV importieren"
+          description="Lade deinen Hevy-Export hoch, um Trainingstage automatisch zu markieren."
+          hint="Funktioniert auch rückwirkend für ältere Workouts aus deinem Export."
+          onImported={() => router.refresh()}
+        />
+      </CollapsibleSection>
 
       <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
         <div className={cn(activeSection === "metrics" ? "block" : "hidden", "xl:block")}>
