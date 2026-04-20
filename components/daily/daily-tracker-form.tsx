@@ -7,6 +7,7 @@ import { ClipboardPaste, Copy } from "lucide-react";
 
 import { DailyChecklistPanel } from "@/components/daily/daily-checklist-panel";
 import { DailyMetricsPanel } from "@/components/daily/daily-metrics-panel";
+import { HevyCsvUpload } from "@/components/hevy/hevy-csv-upload";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -494,7 +495,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
       <Card className="space-y-5">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
-            <CardTitle>Quick Capture</CardTitle>
+            <CardTitle>Jetzt loggen</CardTitle>
             <CardDescription className="mt-2">
               Mobile-first: erst Tagesdaten, dann Checklisten. Supplement-Logs laufen jetzt mit.
             </CardDescription>
@@ -547,6 +548,14 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
 
         <StatusMessage tone={status.tone} message={status.message} />
       </Card>
+
+      <HevyCsvUpload
+        variant="compact"
+        title="Hevy CSV importieren"
+        description="Lade deinen Hevy-Export hoch, um Trainingstage automatisch zu markieren."
+        hint="Funktioniert auch rückwirkend für ältere Workouts aus deinem Export."
+        onImported={() => router.refresh()}
+      />
 
       <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
         <div className={cn(activeSection === "metrics" ? "block" : "hidden", "xl:block")}>

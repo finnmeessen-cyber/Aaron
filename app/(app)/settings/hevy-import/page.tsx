@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
 
 import { PageHeader } from "@/components/app-shell/page-header";
+import { PageHero } from "@/components/app-shell/page-hero";
 import { PageShell } from "@/components/app-shell/page-shell";
 import { HevyCsvUpload } from "@/components/hevy/hevy-csv-upload";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
@@ -29,24 +30,26 @@ export default async function HevyImportPage() {
 
   return (
     <PageShell className="gap-6">
-      <PageHeader
-        eyebrow="Settings"
-        title="Hevy Import"
-        description="Import your exported Hevy CSV to automatically mark training days in your tracker."
-      />
+      <PageHero className="space-y-5">
+        <div className="flex">
+          <Link
+            href={SETTINGS_ROUTE}
+            className="inline-flex min-h-10 items-center justify-center rounded-2xl border border-border bg-card px-4 text-sm font-medium transition hover:border-primary/40 hover:bg-background"
+          >
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Zurück zu Settings
+          </Link>
+        </div>
+
+        <PageHeader
+          eyebrow="Settings"
+          title="Hevy Import"
+          description="Import your exported Hevy CSV to automatically mark training days in your tracker."
+        />
+      </PageHero>
 
       <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
         <div className="space-y-5">
-          <div className="flex">
-            <Link
-              href={SETTINGS_ROUTE}
-              className="inline-flex min-h-10 items-center justify-center rounded-2xl border border-border bg-card px-4 text-sm font-medium transition hover:border-primary/40 hover:bg-muted"
-            >
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Zurück zu Settings
-            </Link>
-          </div>
-
           <HevyCsvUpload />
         </div>
 

@@ -22,6 +22,14 @@ type ErrorResponse = {
   error?: string;
 };
 
+type HevyCsvUploadProps = {
+  title?: string;
+  description?: string;
+  hint?: string;
+  variant?: "default" | "compact";
+  onImported?: (result: HevyImportResult) => void;
+};
+
 function getErrorMessage(payload: unknown) {
   if (typeof payload === "object" && payload && "error" in payload) {
     return (payload as ErrorResponse).error ?? null;
@@ -45,7 +53,13 @@ function SummaryMetric({
   );
 }
 
-export function HevyCsvUpload() {
+export function HevyCsvUpload({
+  description = "Lade deinen Hevy Workout-Export als CSV hoch. Die App gruppiert die Einträge zu Workouts und markiert die passenden Trainingstage automatisch.",
+  hint = "Exportiere die Datei in Hevy unter Profile → Settings → Export & Import Data → Export Workouts.",
+  onImported,
+  title = "CSV hochladen",
+  variant = "default"
+}: HevyCsvUploadProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [pending, setPending] = useState(false);
@@ -105,6 +119,7 @@ export function HevyCsvUpload() {
 
       const importResult = payload as HevyImportResult;
       setResult(importResult);
+      onImported?.(importResult);
       setStatus({
         tone: importResult.duplicateImport ? "warning" : "success",
         message: importResult.duplicateImport
@@ -136,17 +151,16 @@ export function HevyCsvUpload() {
       <Card className="space-y-5 p-5 md:p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="space-y-2">
-            <CardTitle className="text-xl">CSV hochladen</CardTitle>
-            <CardDescription>
-              Lade deinen Hevy Workout-Export als CSV hoch. Die App gruppiert die Einträge zu
-              Workouts und markiert die passenden Trainingstage automatisch.
-            </CardDescription>
+            <CardTitle className={variant === "compact" ? "text-lg" : "text-xl"}>{title}</CardTitle>
+            <CardDescription>{description}</CardDescription>
           </div>
-          <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
-            Benötigt: <span className="font-medium text-foreground">title</span>,{" "}
-            <span className="font-medium text-foreground">start_time</span>,{" "}
-            <span className="font-medium text-foreground">end_time</span>
-          </div>
+          {variant === "default" ? (
+            <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+              Benötigt: <span className="font-medium text-foreground">title</span>,{" "}
+              <span className="font-medium text-foreground">start_time</span>,{" "}
+              <span className="font-medium text-foreground">end_time</span>
+            </div>
+          ) : null}
         </div>
 
         <form className="space-y-4" onSubmit={handleSubmit}>
@@ -163,8 +177,7 @@ export function HevyCsvUpload() {
               onChange={handleFileChange}
             />
             <p className="text-sm text-muted-foreground">
-              Exportiere die Datei in Hevy unter Profile → Settings → Export &amp; Import Data →
-              Export Workouts.
+              {hint}
             </p>
           </div>
 
@@ -187,7 +200,7 @@ export function HevyCsvUpload() {
               ) : (
                 <>
                   <Upload className="mr-2 h-4 w-4" />
-                  Hevy CSV importieren
+                  {variant === "compact" ? "CSV importieren" : "Hevy CSV importieren"}
                 </>
               )}
             </Button>

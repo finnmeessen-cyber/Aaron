@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/app-shell/page-header";
+import { PageHero } from "@/components/app-shell/page-hero";
 import { PageShell } from "@/components/app-shell/page-shell";
 import { DailyTrackerForm } from "@/components/daily/daily-tracker-form";
 import { SetupRequired } from "@/components/ui/setup-required";
@@ -30,12 +31,14 @@ export default async function DailyPage({
   const data = await getDailyPageData(supabase, user.id, searchParams?.date);
 
   return (
-    <PageShell>
-      <PageHeader
-        eyebrow="Daily Tracker"
-        title={formatDisplayDate(data.selectedDate)}
-        description="Gewicht, Schlaf, Energie, Cravings, Training und komplette Checklisten in einer mobilen Erfassungsfläche."
-      />
+    <PageShell className="gap-6">
+      <PageHero>
+        <PageHeader
+          eyebrow="Daily Tracker"
+          title={formatDisplayDate(data.selectedDate)}
+          description="Gewicht, Schlaf, Energie, Cravings, Training und komplette Checklisten in einer mobilen Erfassungsfläche."
+        />
+      </PageHero>
       <DailyTrackerForm {...data} />
     </PageShell>
   );

@@ -1,9 +1,12 @@
 import { PageHeader } from "@/components/app-shell/page-header";
+import { PageHero } from "@/components/app-shell/page-hero";
 import { PageShell } from "@/components/app-shell/page-shell";
 import { Sparkline } from "@/components/charts/sparkline";
+import { StrengthProgressCard } from "@/components/hevy/strength-progress-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { SetupRequired } from "@/components/ui/setup-required";
+import { getHevyStrengthProgressData } from "@/lib/hevy/strength-progress";
 import {
   getWeeklyReviewData,
   reviewComparisonLabel,
@@ -27,15 +30,20 @@ export default async function WeeklyReviewPage() {
     return null;
   }
 
-  const data = await getWeeklyReviewData(supabase, user.id);
+  const [data, strengthProgress] = await Promise.all([
+    getWeeklyReviewData(supabase, user.id),
+    getHevyStrengthProgressData(supabase, user.id)
+  ]);
 
   return (
-    <PageShell>
-      <PageHeader
-        eyebrow="Weekly Review"
-        title={`Woche ab ${formatShortDate(data.currentWeekStart)}`}
-        description="Automatische Review mit Gewicht, Energie, Cravings, Trainingsanzahl und pragmatischen Anpassungsvorschlägen."
-      />
+    <PageShell className="gap-6">
+      <PageHero>
+        <PageHeader
+          eyebrow="Weekly Review"
+          title={`Woche ab ${formatShortDate(data.currentWeekStart)}`}
+          description="Automatische Review mit Gewicht, Energie, Cravings, Trainingsanzahl und pragmatischen Anpassungsvorschlägen."
+        />
+      </PageHero>
 
       <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
         <Card>
@@ -63,6 +71,8 @@ export default async function WeeklyReviewPage() {
           <p className="mt-2 text-sm text-muted-foreground">{reviewTrainingHint(data.trainingSessions)}</p>
         </Card>
       </div>
+
+      <StrengthProgressCard data={strengthProgress} />
 
       <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
         <Card className="space-y-4">
