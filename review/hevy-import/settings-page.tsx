@@ -1,6 +1,5 @@
 import type { Route } from "next";
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { ArrowRight, Upload } from "lucide-react";
 
 import { PageHeader } from "@/components/app-shell/page-header";
@@ -25,7 +24,7 @@ export default async function SettingsPage() {
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirect("/login");
+    return null;
   }
 
   const data = await getSettingsPageData(supabase, user.id);

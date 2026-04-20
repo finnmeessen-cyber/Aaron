@@ -10,7 +10,7 @@ export function MobileNavStrip() {
   const pathname = usePathname();
 
   return (
-    <div className="overflow-x-auto px-4 pb-3 md:hidden">
+    <div className="overflow-x-auto pb-3 md:hidden">
       <div className="flex min-w-max gap-2">
         {NAV_ITEMS.map((item) => {
           const active = pathname.startsWith(item.href);

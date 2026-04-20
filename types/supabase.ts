@@ -70,6 +70,29 @@ export type Database = {
           user_id?: string;
         };
       };
+      data_imports: {
+        Row: {
+          created_at: string;
+          id: string;
+          metadata: Json;
+          provider: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          id?: string;
+          metadata?: Json;
+          provider: string;
+          user_id?: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          metadata?: Json;
+          provider?: string;
+          user_id?: string;
+        };
+      };
       daily_entries: {
         Row: {
           body_weight: number | null;
@@ -82,6 +105,7 @@ export type Database = {
           notes: string | null;
           sleep_score: number | null;
           training_completed: boolean;
+          training_source: string | null;
           day_type: "training" | "rest";
           updated_at: string;
           user_id: string;
@@ -97,6 +121,7 @@ export type Database = {
           notes?: string | null;
           sleep_score?: number | null;
           training_completed?: boolean;
+          training_source?: string | null;
           day_type?: "training" | "rest";
           updated_at?: string;
           user_id?: string;
@@ -112,6 +137,7 @@ export type Database = {
           notes?: string | null;
           sleep_score?: number | null;
           training_completed?: boolean;
+          training_source?: string | null;
           day_type?: "training" | "rest";
           updated_at?: string;
           user_id?: string;
@@ -290,6 +316,47 @@ export type Database = {
           id?: string;
           timezone?: string;
           updated_at?: string;
+        };
+      };
+      source_workouts: {
+        Row: {
+          created_at: string;
+          data_import_id: string | null;
+          duration_minutes: number | null;
+          id: string;
+          provider: string;
+          provider_workout_id: string;
+          raw_payload: Json;
+          started_at: string | null;
+          title: string | null;
+          user_id: string;
+          workout_date: string;
+        };
+        Insert: {
+          created_at?: string;
+          data_import_id?: string | null;
+          duration_minutes?: number | null;
+          id?: string;
+          provider?: string;
+          provider_workout_id: string;
+          raw_payload: Json;
+          started_at?: string | null;
+          title?: string | null;
+          user_id?: string;
+          workout_date: string;
+        };
+        Update: {
+          created_at?: string;
+          data_import_id?: string | null;
+          duration_minutes?: number | null;
+          id?: string;
+          provider?: string;
+          provider_workout_id?: string;
+          raw_payload?: Json;
+          started_at?: string | null;
+          title?: string | null;
+          user_id?: string;
+          workout_date?: string;
         };
       };
       supplement_catalog: {

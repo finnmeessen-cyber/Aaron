@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { ShellContainer } from "@/components/app-shell/shell-container";
 import { cn } from "@/lib/utils";
 
 export function PageShell({
@@ -10,8 +11,8 @@ export function PageShell({
   children: ReactNode;
 }) {
   return (
-    <div className={cn("mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-5 md:px-6", className)}>
+    <ShellContainer className={cn("flex flex-col gap-5 pt-4 pb-6 md:pt-5 md:pb-8", className)}>
       {children}
-    </div>
+    </ShellContainer>
   );
 }
