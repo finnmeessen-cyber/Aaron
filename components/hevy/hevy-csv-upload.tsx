@@ -1,9 +1,18 @@
 "use client";
 
-import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { AlertCircle, CheckCircle2, LoaderCircle, Upload } from "lucide-react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent
+} from "react";
+import { AlertCircle, CheckCircle2, LoaderCircle, RefreshCw, Upload } from "lucide-react";
 
-import type { HevyImportResult } from "@/lib/hevy/types";
+import type {
+  HevyOperationResult,
+  HevySyncStatus
+} from "@/lib/hevy/types";
 import {
   getOfflineMessage,
   isBrowserOffline
@@ -23,11 +32,11 @@ type ErrorResponse = {
 };
 
 type HevyCsvUploadProps = {
+  onCompleted?: () => void;
   title?: string;
   description?: string | null;
   hint?: string | null;
   variant?: "default" | "compact";
-  onImported?: (result: HevyImportResult) => void;
 };
 
 function getErrorMessage(payload: unknown) {
@@ -53,21 +62,71 @@ function SummaryMetric({
   );
 }
 
+function formatSyncDate(value: string) {
+  try {
+    return new Intl.DateTimeFormat("de-DE", {
+      dateStyle: "medium",
+      timeStyle: "short"
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function buildResultDescription(result: HevyOperationResult) {
+  if (result.operation === "api_sync") {
+    return result.deletedEventsIgnored > 0
+      ? `${result.deletedEventsIgnored} gelöschte Hevy-Events wurden im MVP übersprungen.`
+      : "Die neuesten Hevy-Workouts wurden mit deinem Tracker abgeglichen.";
+  }
+
+  return result.duplicateImport
+    ? "Die Datei wurde erkannt und sicher übersprungen. Dein bestehender Datenstand bleibt unverändert."
+    : "Die Hevy-Daten wurden verarbeitet und in deinen Trainingsverlauf übernommen.";
+}
+
 export function HevyCsvUpload({
-  description = "Lade deinen Hevy Workout-Export als CSV hoch. Die App gruppiert die Einträge zu Workouts und markiert die passenden Trainingstage automatisch.",
+  description = "Sync direkt per Hevy API oder lade deinen Hevy Workout-Export als CSV hoch.",
   hint = "Exportiere die Datei in Hevy unter Profile → Settings → Export & Import Data → Export Workouts.",
-  onImported,
-  title = "CSV hochladen",
+  onCompleted,
+  title = "Hevy Import",
   variant = "default"
 }: HevyCsvUploadProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [pending, setPending] = useState(false);
-  const [result, setResult] = useState<HevyImportResult | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [importPending, setImportPending] = useState(false);
+  const [syncPending, setSyncPending] = useState(false);
+  const [result, setResult] = useState<HevyOperationResult | null>(null);
+  const [syncStatus, setSyncStatus] = useState<HevySyncStatus | null>(null);
   const [status, setStatus] = useState<StatusState>({
     tone: "muted",
     message: null
   });
+
+  async function loadSyncStatus() {
+    try {
+      const response = await fetch("/api/hevy/sync", {
+        method: "GET"
+      });
+
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = (await response.json().catch(() => null)) as HevySyncStatus | null;
+
+      if (payload) {
+        setSyncStatus(payload);
+      }
+    } catch {
+      return;
+    }
+  }
+
+  useEffect(() => {
+    void loadSyncStatus();
+  }, []);
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const nextFile = event.target.files?.[0] ?? null;
@@ -95,7 +154,7 @@ export function HevyCsvUpload({
       return;
     }
 
-    setPending(true);
+    setImportPending(true);
     setResult(null);
     setStatus({ tone: "muted", message: null });
 
@@ -107,7 +166,7 @@ export function HevyCsvUpload({
         body: formData,
         method: "POST"
       });
-      const payload = (await response.json().catch(() => null)) as HevyImportResult | ErrorResponse | null;
+      const payload = (await response.json().catch(() => null)) as HevyOperationResult | ErrorResponse | null;
 
       if (!response.ok) {
         setStatus({
@@ -117,14 +176,18 @@ export function HevyCsvUpload({
         return;
       }
 
-      const importResult = payload as HevyImportResult;
+      const importResult = payload as HevyOperationResult;
       setResult(importResult);
-      onImported?.(importResult);
+      onCompleted?.();
       setStatus({
-        tone: importResult.duplicateImport ? "warning" : "success",
-        message: importResult.duplicateImport
-          ? "Diese Datei wurde bereits importiert. Der Upload wurde sicher erkannt und keine neuen Workouts wurden angelegt."
-          : "Hevy CSV erfolgreich importiert. Trainingstage wurden in deinem Tracker markiert."
+        tone:
+          importResult.operation === "csv_import" && importResult.duplicateImport
+            ? "warning"
+            : "success",
+        message:
+          importResult.operation === "csv_import" && importResult.duplicateImport
+            ? "Diese Datei wurde bereits importiert. Der Upload wurde sicher erkannt und keine neuen Workouts wurden angelegt."
+            : "Hevy CSV erfolgreich importiert. Trainingstage wurden in deinem Tracker markiert."
       });
     } catch {
       setStatus({
@@ -132,7 +195,110 @@ export function HevyCsvUpload({
         message: "Der Upload konnte nicht abgeschlossen werden. Bitte versuche es erneut."
       });
     } finally {
-      setPending(false);
+      setImportPending(false);
+    }
+  }
+
+  async function handleSync() {
+    if (isBrowserOffline()) {
+      setStatus({
+        tone: "warning",
+        message: getOfflineMessage("Sync bitte nach dem Reconnect erneut starten.")
+      });
+      return;
+    }
+
+    setSyncPending(true);
+    setResult(null);
+    setStatus({ tone: "muted", message: null });
+
+    try {
+      const response = await fetch("/api/hevy/sync", {
+        body: JSON.stringify(apiKey.trim() ? { apiKey } : {}),
+        headers: {
+          "content-type": "application/json"
+        },
+        method: "POST"
+      });
+      const payload = (await response.json().catch(() => null)) as HevyOperationResult | ErrorResponse | null;
+
+      if (!response.ok) {
+        setStatus({
+          tone: "danger",
+          message: getErrorMessage(payload) ?? "Der Hevy-Sync ist fehlgeschlagen."
+        });
+        return;
+      }
+
+      const syncResult = payload as HevyOperationResult;
+      setApiKey("");
+      setResult(syncResult);
+      onCompleted?.();
+      setStatus({
+        tone: "success",
+        message: syncStatus?.connected
+          ? "Hevy erfolgreich synchronisiert."
+          : "Hevy verbunden und synchronisiert."
+      });
+      await loadSyncStatus();
+    } catch {
+      setStatus({
+        tone: "danger",
+        message: "Der Hevy-Sync konnte nicht abgeschlossen werden. Bitte versuche es erneut."
+      });
+    } finally {
+      setSyncPending(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    if (isBrowserOffline()) {
+      setStatus({
+        tone: "warning",
+        message: getOfflineMessage("Verbindung bitte nach dem Reconnect erneut entfernen.")
+      });
+      return;
+    }
+
+    setStatus({ tone: "muted", message: null });
+
+    try {
+      const response = await fetch("/api/hevy/sync", {
+        method: "DELETE"
+      });
+      const payload = (await response.json().catch(() => null)) as ErrorResponse | null;
+
+      if (!response.ok) {
+        setStatus({
+          tone: "danger",
+          message: getErrorMessage(payload) ?? "Die Hevy-Verbindung konnte nicht entfernt werden."
+        });
+        return;
+      }
+
+      setApiKey("");
+      setResult(null);
+      setSyncStatus((current) =>
+        current
+          ? {
+              ...current,
+              connected: false
+            }
+          : {
+              connected: false,
+              lastSyncedAt: null,
+              lastSyncMode: null
+            }
+      );
+      setStatus({
+        tone: "success",
+        message: "Der gespeicherte Hevy API Key wurde entfernt."
+      });
+    } catch {
+      setStatus({
+        tone: "danger",
+        message: "Die Hevy-Verbindung konnte nicht entfernt werden."
+      });
     }
   }
 
@@ -149,21 +315,129 @@ export function HevyCsvUpload({
   return (
     <div className="space-y-5">
       <Card className="space-y-5 p-5 md:p-6">
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-2">
-            <CardTitle className={variant === "compact" ? "text-lg" : "text-xl"}>{title}</CardTitle>
-            {description ? <CardDescription>{description}</CardDescription> : null}
-          </div>
-          {variant === "default" ? (
-            <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
-              Benötigt: <span className="font-medium text-foreground">title</span>,{" "}
-              <span className="font-medium text-foreground">start_time</span>,{" "}
-              <span className="font-medium text-foreground">end_time</span>
+        <div className="space-y-4">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div className="space-y-2">
+              <CardTitle className={variant === "compact" ? "text-lg" : "text-xl"}>
+                {title}
+              </CardTitle>
+              {description ? <CardDescription>{description}</CardDescription> : null}
             </div>
-          ) : null}
+            {variant === "default" ? (
+              <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+                Hevy API + CSV fallback
+              </div>
+            ) : null}
+          </div>
+
+          <div className="space-y-4 rounded-2xl border border-border bg-muted/60 p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Sync Hevy</p>
+                {variant === "default" ? (
+                  <p className="text-sm text-muted-foreground">
+                    API-Key einmal eingeben, serverseitig speichern und Workouts direkt
+                    synchronisieren.
+                  </p>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-2 text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                {syncStatus?.connected ? (
+                  <span className="rounded-full border border-border bg-background px-3 py-1 text-foreground">
+                    Verbunden
+                  </span>
+                ) : (
+                  <span className="rounded-full border border-border bg-background px-3 py-1">
+                    Nicht verbunden
+                  </span>
+                )}
+                {syncStatus?.lastSyncedAt ? (
+                  <span className="rounded-full border border-border bg-background px-3 py-1 normal-case tracking-normal">
+                    {formatSyncDate(syncStatus.lastSyncedAt)}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="hevy-api-key">
+                Hevy API Key
+              </label>
+              <Input
+                id="hevy-api-key"
+                autoCapitalize="none"
+                autoComplete="off"
+                autoCorrect="off"
+                placeholder={
+                  syncStatus?.connected
+                    ? "Leer lassen, um den gespeicherten Key zu verwenden"
+                    : "Hevy API Key"
+                }
+                type="password"
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
+              />
+              {variant === "default" ? (
+                <p className="text-sm text-muted-foreground">
+                  Den Key findest du in Hevy unter <span className="font-medium text-foreground">hevy.com/settings?developer</span>.
+                </p>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Button
+                className="sm:min-w-44"
+                disabled={syncPending}
+                onClick={() => void handleSync()}
+                type="button"
+              >
+                {syncPending ? (
+                  <>
+                    <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+                    Sync läuft
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    Sync Hevy
+                  </>
+                )}
+              </Button>
+              {syncStatus?.connected ? (
+                <Button
+                  disabled={syncPending}
+                  onClick={() => void handleDisconnect()}
+                  type="button"
+                  variant="secondary"
+                >
+                  Verbindung entfernen
+                </Button>
+              ) : null}
+            </div>
+          </div>
         </div>
 
+        <div className="h-px bg-border/70" />
+
         <form className="space-y-4" onSubmit={handleSubmit}>
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">CSV Fallback</p>
+              {variant === "default" ? (
+                <p className="text-sm text-muted-foreground">
+                  Verwende den Export aus Hevy, wenn du lieber per Datei importierst.
+                </p>
+              ) : null}
+            </div>
+            {variant === "default" ? (
+              <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+                Benötigt: <span className="font-medium text-foreground">title</span>,{" "}
+                <span className="font-medium text-foreground">start_time</span>,{" "}
+                <span className="font-medium text-foreground">end_time</span>
+              </div>
+            ) : null}
+          </div>
+
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="hevy-csv-file">
               Hevy CSV-Datei
@@ -172,7 +446,7 @@ export function HevyCsvUpload({
               ref={fileInputRef}
               id="hevy-csv-file"
               type="file"
-              accept=".csv,text/csv"
+              accept=".csv,.tsv,text/csv,text/tab-separated-values"
               className="file:mr-4 file:rounded-xl file:border-0 file:bg-muted file:px-3 file:py-2 file:text-sm file:font-medium file:text-foreground hover:file:bg-muted/80"
               onChange={handleFileChange}
             />
@@ -189,8 +463,8 @@ export function HevyCsvUpload({
           ) : null}
 
           <div className="flex flex-col gap-3 sm:flex-row">
-            <Button className="sm:min-w-44" disabled={pending} type="submit">
-              {pending ? (
+            <Button className="sm:min-w-44" disabled={importPending} type="submit">
+              {importPending ? (
                 <>
                   <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
                   Import läuft
@@ -202,7 +476,12 @@ export function HevyCsvUpload({
                 </>
               )}
             </Button>
-            <Button disabled={pending || !file} onClick={resetSelection} type="button" variant="secondary">
+            <Button
+              disabled={importPending || !file}
+              onClick={resetSelection}
+              type="button"
+              variant="secondary"
+            >
               Auswahl zurücksetzen
             </Button>
           </div>
@@ -216,29 +495,49 @@ export function HevyCsvUpload({
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div className="space-y-2">
               <div className="flex items-center gap-2">
-                {result.duplicateImport ? (
+                {result.operation === "csv_import" && result.duplicateImport ? (
                   <AlertCircle className="h-5 w-5 text-warning" />
                 ) : (
                   <CheckCircle2 className="h-5 w-5 text-success" />
                 )}
                 <CardTitle className="text-xl">
-                  {result.duplicateImport ? "Import bereits vorhanden" : "Import abgeschlossen"}
+                  {result.operation === "api_sync"
+                    ? "Sync abgeschlossen"
+                    : result.duplicateImport
+                      ? "Import bereits vorhanden"
+                      : "Import abgeschlossen"}
                 </CardTitle>
               </div>
-              <CardDescription>
-                {result.duplicateImport
-                  ? "Die Datei wurde erkannt und sicher übersprungen. Dein bestehender Datenstand bleibt unverändert."
-                  : "Die Hevy-Daten wurden verarbeitet und in deinen Trainingsverlauf übernommen."}
-              </CardDescription>
+              <CardDescription>{buildResultDescription(result)}</CardDescription>
             </div>
-            <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
-              Import-ID: <span className="font-mono text-xs text-foreground">{result.dataImportId}</span>
+            <div className="space-y-2">
+              {result.operation === "api_sync" ? (
+                <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+                  Sync: <span className="font-medium text-foreground">{result.syncMode}</span>
+                </div>
+              ) : null}
+              <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+                Import-ID:{" "}
+                <span className="font-mono text-xs text-foreground">{result.dataImportId}</span>
+              </div>
             </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <SummaryMetric label="CSV-Zeilen" value={result.parsedRows} />
-            <SummaryMetric label="Workouts gruppiert" value={result.groupedWorkouts} />
+            <SummaryMetric
+              label={result.operation === "api_sync" ? "Workouts geladen" : "CSV-Zeilen"}
+              value={result.operation === "api_sync" ? result.fetchedWorkouts : result.parsedRows}
+            />
+            <SummaryMetric
+              label={
+                result.operation === "api_sync" ? "Events ignoriert" : "Workouts gruppiert"
+              }
+              value={
+                result.operation === "api_sync"
+                  ? result.deletedEventsIgnored
+                  : result.groupedWorkouts
+              }
+            />
             <SummaryMetric label="Workouts importiert" value={result.insertedWorkouts} />
             <SummaryMetric label="Tage aktualisiert" value={result.updatedDailyEntries} />
           </div>

@@ -128,12 +128,16 @@ export class HevyImportError extends Error {
   }
 }
 
-function buildProviderWorkoutId(row: ParsedHevyCsvRow) {
-  return createHash("sha256")
-    .update(
-      [row.title.trim().toLowerCase(), row.startTime.trim(), row.endTime.trim()].join("::")
-    )
-    .digest("hex");
+export function buildHevyWorkoutGroupKey(
+  title: string,
+  startedAtIso: string,
+  endedAtIso: string
+) {
+  return [title.trim().toLowerCase(), startedAtIso, endedAtIso].join("::");
+}
+
+export function buildHevyProviderWorkoutId(groupKey: string) {
+  return createHash("sha256").update(groupKey).digest("hex");
 }
 
 function normalizeHeader(value: string) {
@@ -352,10 +356,6 @@ function buildOffsetAwareTimestamp(parsedDate: Date): ParsedTimestamp {
   };
 }
 
-function buildWorkoutGroupKey(row: ParsedHevyCsvRow, startedAtIso: string, endedAtIso: string) {
-  return [row.title.trim().toLowerCase(), startedAtIso, endedAtIso].join("::");
-}
-
 export function groupHevyRows(rows: ParsedHevyCsvRow[]) {
   const groupedWorkouts = new Map<string, GroupedHevyWorkout>();
 
@@ -370,7 +370,11 @@ export function groupHevyRows(rows: ParsedHevyCsvRow[]) {
     }
 
     const durationMinutes = differenceInMinutes(endTimestamp.date, startTimestamp.date);
-    const groupKey = buildWorkoutGroupKey(row, startTimestamp.iso, endTimestamp.iso);
+    const groupKey = buildHevyWorkoutGroupKey(
+      row.title,
+      startTimestamp.iso,
+      endTimestamp.iso
+    );
     const existingWorkout = groupedWorkouts.get(groupKey);
 
     if (existingWorkout) {
@@ -383,8 +387,9 @@ export function groupHevyRows(rows: ParsedHevyCsvRow[]) {
       endTime: row.endTime,
       endedAtIso: endTimestamp.iso,
       groupKey,
-      providerWorkoutId: buildProviderWorkoutId(row),
+      providerWorkoutId: buildHevyProviderWorkoutId(groupKey),
       rows: [row],
+      sourceKind: "csv",
       startedAtIso: startTimestamp.iso,
       startTime: row.startTime,
       title: row.title,

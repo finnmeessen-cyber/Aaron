@@ -44,7 +44,7 @@ export default async function HevyImportPage() {
         <PageHeader
           eyebrow="Settings"
           title="Hevy Import"
-          description="Import your exported Hevy CSV to automatically mark training days in your tracker."
+          description="Sync deine Hevy Workouts direkt oder nutze den CSV-Export als Fallback."
         />
       </PageHero>
 
@@ -64,9 +64,9 @@ export default async function HevyImportPage() {
             </div>
             <div className="space-y-3">
               {[
-                "Exportiere deine Workouts als CSV direkt aus Hevy.",
-                "Lade die Datei hier hoch. Die App gruppiert Zeilen anhand von Titel, Startzeit und Endzeit.",
-                "Für jeden Workout-Block wird ein Source-Workout gespeichert und der Trainingstag markiert."
+                "Verbinde deinen Hevy API Key einmal serverseitig und starte den Sync manuell.",
+                "Die App nutzt den offiziellen Hevy Workouts-Endpoint und speichert jeden Lauf als Data Import.",
+                "CSV bleibt als Fallback verfügbar, falls du lieber über den Export importierst."
               ].map((item) => (
                 <div
                   key={item}
@@ -83,18 +83,18 @@ export default async function HevyImportPage() {
             <div>
               <CardTitle>Unterstütztes Format</CardTitle>
               <CardDescription className="mt-2">
-                Aktuell ist der Import auf Hevy CSV-Exporte ausgelegt.
+                API-Sync nutzt den offiziellen Hevy Endpoint. CSV bleibt als Fallback aktiv.
               </CardDescription>
             </div>
             <div className="rounded-2xl border border-border bg-muted px-4 py-4">
               <p className="text-xs uppercase tracking-[0.32em] text-muted-foreground">
-                Erwartete Felder
+                CSV Fallback
               </p>
               <p className="mt-3 text-sm leading-6 text-muted-foreground">
                 <span className="font-medium text-foreground">title</span>,{" "}
                 <span className="font-medium text-foreground">start_time</span> und{" "}
                 <span className="font-medium text-foreground">end_time</span> müssen vorhanden
-                sein. Doppelte Uploads werden sicher erkannt.
+                sein. Doppelte Uploads und Re-Syncs werden sicher erkannt.
               </p>
             </div>
           </Card>

@@ -562,7 +562,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
           title="Hevy Import"
           description={null}
           hint={null}
-          onImported={() => router.refresh()}
+          onCompleted={() => router.refresh()}
         />
       </CollapsibleSection>
 

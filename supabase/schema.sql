@@ -1,4 +1,7 @@
 create extension if not exists pgcrypto;
+create extension if not exists supabase_vault with schema vault;
+
+create schema if not exists private;
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -68,6 +71,13 @@ create table if not exists public.user_settings (
   macro_rest_carbs integer not null default 320 check (macro_rest_carbs >= 0),
   macro_rest_fat integer not null default 55 check (macro_rest_fat >= 0),
   training_days integer[] not null default array[1, 3, 5],
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create table if not exists private.hevy_api_connections (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  vault_secret_id uuid not null,
+  created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
 
@@ -266,6 +276,114 @@ before update on public.user_settings
 for each row
 execute function public.set_updated_at();
 
+drop trigger if exists private_hevy_api_connections_set_updated_at on private.hevy_api_connections;
+create trigger private_hevy_api_connections_set_updated_at
+before update on private.hevy_api_connections
+for each row
+execute function public.set_updated_at();
+
+create or replace function public.hevy_has_api_key(target_user_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, private
+as $$
+begin
+  return exists (
+    select 1
+    from private.hevy_api_connections
+    where user_id = target_user_id
+  );
+end;
+$$;
+
+create or replace function public.hevy_load_api_key(target_user_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = public, private, vault
+as $$
+declare
+  stored_secret text;
+begin
+  select decrypted_secret
+  into stored_secret
+  from private.hevy_api_connections connection
+  join vault.decrypted_secrets secret
+    on secret.id = connection.vault_secret_id
+  where connection.user_id = target_user_id;
+
+  return stored_secret;
+end;
+$$;
+
+create or replace function public.hevy_store_api_key(target_user_id uuid, new_api_key text)
+returns void
+language plpgsql
+security definer
+set search_path = public, private, vault
+as $$
+declare
+  existing_secret_id uuid;
+begin
+  if new_api_key is null or btrim(new_api_key) = '' then
+    raise exception 'hevy_api_key_required';
+  end if;
+
+  select vault_secret_id
+  into existing_secret_id
+  from private.hevy_api_connections
+  where user_id = target_user_id;
+
+  if existing_secret_id is null then
+    insert into private.hevy_api_connections (user_id, vault_secret_id)
+    values (
+      target_user_id,
+      vault.create_secret(btrim(new_api_key))
+    )
+    on conflict (user_id) do update
+      set vault_secret_id = excluded.vault_secret_id;
+
+    return;
+  end if;
+
+  perform vault.update_secret(
+    existing_secret_id,
+    btrim(new_api_key)
+  );
+
+  update private.hevy_api_connections
+  set updated_at = timezone('utc', now())
+  where user_id = target_user_id;
+end;
+$$;
+
+create or replace function public.hevy_delete_api_key(target_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, private, vault
+as $$
+declare
+  existing_secret_id uuid;
+begin
+  select vault_secret_id
+  into existing_secret_id
+  from private.hevy_api_connections
+  where user_id = target_user_id;
+
+  if existing_secret_id is null then
+    return;
+  end if;
+
+  delete from private.hevy_api_connections
+  where user_id = target_user_id;
+
+  delete from vault.secrets
+  where id = existing_secret_id;
+end;
+$$;
+
 drop trigger if exists user_settings_sync_phase_started_at on public.user_settings;
 create trigger user_settings_sync_phase_started_at
 before insert or update on public.user_settings
@@ -316,6 +434,7 @@ execute function public.set_updated_at();
 
 alter table public.profiles enable row level security;
 alter table public.user_settings enable row level security;
+alter table private.hevy_api_connections enable row level security;
 alter table public.daily_entries enable row level security;
 alter table public.checklist_templates enable row level security;
 alter table public.daily_checklists enable row level security;
@@ -594,3 +713,19 @@ create trigger on_auth_user_created
 after insert on auth.users
 for each row
 execute function public.handle_new_user();
+revoke all on schema private from public, anon, authenticated, service_role;
+revoke all on all tables in schema private from public, anon, authenticated, service_role;
+
+revoke all on schema vault from public, anon, authenticated, service_role;
+revoke all on table vault.secrets from public, anon, authenticated, service_role;
+revoke all on table vault.decrypted_secrets from public, anon, authenticated, service_role;
+
+revoke all on function public.hevy_has_api_key(uuid) from public, anon, authenticated;
+revoke all on function public.hevy_load_api_key(uuid) from public, anon, authenticated;
+revoke all on function public.hevy_store_api_key(uuid, text) from public, anon, authenticated;
+revoke all on function public.hevy_delete_api_key(uuid) from public, anon, authenticated;
+
+grant execute on function public.hevy_has_api_key(uuid) to service_role;
+grant execute on function public.hevy_load_api_key(uuid) to service_role;
+grant execute on function public.hevy_store_api_key(uuid, text) to service_role;
+grant execute on function public.hevy_delete_api_key(uuid) to service_role;

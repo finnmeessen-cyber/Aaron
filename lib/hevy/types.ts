@@ -1,4 +1,4 @@
-import type { TableInsert, TableRow } from "@/types/supabase";
+import type { Json, TableInsert, TableRow } from "@/types/supabase";
 
 export const HEVY_PROVIDER = "hevy" as const;
 export const HEVY_REQUIRED_COLUMNS = ["title", "start_time", "end_time"] as const;
@@ -22,7 +22,9 @@ export type GroupedHevyWorkout = {
   endedAtIso: string;
   groupKey: string;
   providerWorkoutId: string;
+  rawSource?: Json | null;
   rows: ParsedHevyCsvRow[];
+  sourceKind?: "api" | "csv";
   startedAtIso: string;
   startTime: string;
   title: string;
@@ -45,9 +47,30 @@ export type HevyImportSummary = {
 export type HevyImportResult = HevyImportSummary & {
   dataImportId: string;
   duplicateImport: boolean;
+  operation: "csv_import";
 };
 
-export type HevyImportMetadata = {
+export type HevyApiSyncMode = "full" | "incremental";
+
+export type HevySyncResult = {
+  dataImportId: string;
+  deletedEventsIgnored: number;
+  fetchedWorkouts: number;
+  insertedWorkouts: number;
+  operation: "api_sync";
+  syncMode: HevyApiSyncMode;
+  updatedDailyEntries: number;
+};
+
+export type HevyOperationResult = HevyImportResult | HevySyncResult;
+
+export type HevySyncStatus = {
+  connected: boolean;
+  lastSyncedAt: string | null;
+  lastSyncMode: HevyApiSyncMode | null;
+};
+
+export type HevyCsvImportMetadata = {
   duplicate_of_import_id: string | null;
   file_hash: string;
   file_name: string | null;
@@ -55,7 +78,24 @@ export type HevyImportMetadata = {
   grouped_workouts: number;
   parsed_rows: number;
   skipped_duplicate: boolean;
+  source: "csv";
 };
+
+export type HevyApiImportMetadata = {
+  api_user_id: string | null;
+  api_user_name: string | null;
+  api_user_url: string | null;
+  deleted_events_ignored: number;
+  fetched_workouts: number;
+  grouped_workouts: number;
+  parsed_rows: number;
+  since: string | null;
+  source: "api";
+  sync_mode: HevyApiSyncMode;
+  sync_started_at: string;
+};
+
+export type HevyImportMetadata = HevyCsvImportMetadata | HevyApiImportMetadata;
 
 export type DataImportInsert = TableInsert<"data_imports">;
 export type DataImportRow = TableRow<"data_imports">;

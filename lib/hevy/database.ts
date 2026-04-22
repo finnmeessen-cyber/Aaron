@@ -5,14 +5,21 @@ import {
   type DataImportInsert,
   type DataImportRow,
   type GroupedHevyWorkout,
-  type HevyImportMetadata,
+  type HevyApiImportMetadata,
+  type HevyCsvImportMetadata,
   type HevyImportResult,
+  type HevySyncResult,
   type SourceWorkoutInsert
 } from "@/lib/hevy/types";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import type { Json, TableRow } from "@/types/supabase";
 
 type TypedSupabase = ReturnType<typeof createServerSupabaseClient>;
 type MutationError = { message: string } | null;
+type ExistingSourceWorkoutRow = Pick<
+  TableRow<"source_workouts">,
+  "provider_workout_id" | "raw_payload" | "workout_date"
+>;
 type MutationInsertOptions = {
   count?: "exact" | "planned" | "estimated";
   defaultToNull?: boolean;
@@ -44,6 +51,19 @@ type UpdateableDailyEntriesTable<Payload> = {
   };
 };
 
+function isJsonRecord(value: Json): value is Record<string, Json | undefined> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getGroupKeyFromRawPayload(rawPayload: Json) {
+  if (!isJsonRecord(rawPayload)) {
+    return null;
+  }
+
+  const groupKey = rawPayload.group_key;
+  return typeof groupKey === "string" && groupKey ? groupKey : null;
+}
+
 function buildGroupedWorkoutPayload(
   userId: string,
   dataImportId: string,
@@ -65,8 +85,11 @@ function buildGroupedWorkoutPayload(
         row_number: row.rowNumber,
         ...row.source
       })),
+      source_kind: workout.sourceKind ?? "csv",
+      source_workout: workout.rawSource ?? null,
       start_time: workout.startTime,
-      timestamp_assumption: "naive_local_treated_as_utc",
+      timestamp_assumption:
+        workout.sourceKind === "api" ? "api_iso_8601" : "naive_local_treated_as_utc",
       title: workout.title,
       user_timezone: userTimezone
     },
@@ -102,7 +125,7 @@ async function findExistingImportByHash(
 async function createDataImport(
   supabase: TypedSupabase,
   userId: string,
-  metadata: HevyImportMetadata
+  metadata: HevyCsvImportMetadata | HevyApiImportMetadata
 ) {
   const dataImportsTable =
     supabase.from("data_imports") as unknown as InsertReturningTable<DataImportInsert, DataImportRow>;
@@ -121,40 +144,124 @@ async function createDataImport(
   return data as DataImportRow;
 }
 
-async function getInsertedImportWorkouts(
+async function findExistingWorkoutsByGroupKey(
   supabase: TypedSupabase,
   userId: string,
-  dataImportId: string
+  groupKeys: string[]
 ) {
-  const { data, error } = await supabase
-    .from("source_workouts")
-    .select("provider_workout_id, workout_date")
-    .eq("user_id", userId)
-    .eq("provider", HEVY_PROVIDER)
-    .eq("data_import_id", dataImportId);
-
-  if (error) {
-    throw new HevyImportError(`Unable to load imported Hevy workouts: ${error.message}.`, 500);
+  if (!groupKeys.length) {
+    return new Map<string, ExistingSourceWorkoutRow>();
   }
 
-  return (data ?? []) as Array<{
-    provider_workout_id: string;
-    workout_date: string;
-  }>;
+  const { data, error } = await supabase
+    .from("source_workouts")
+    .select("provider_workout_id, raw_payload, workout_date")
+    .eq("user_id", userId)
+    .eq("provider", HEVY_PROVIDER)
+    .in("raw_payload->>group_key", groupKeys);
+
+  if (error) {
+    throw new HevyImportError(`Unable to match existing Hevy workouts: ${error.message}.`, 500);
+  }
+
+  const rows = (data ?? []) as ExistingSourceWorkoutRow[];
+  const workoutMap = new Map<string, ExistingSourceWorkoutRow>();
+
+  for (const row of rows) {
+    const groupKey = getGroupKeyFromRawPayload(row.raw_payload);
+
+    if (groupKey) {
+      workoutMap.set(groupKey, row);
+    }
+  }
+
+  return workoutMap;
 }
 
-async function upsertWorkouts(
+async function getExistingProviderWorkoutIdSet(
+  supabase: TypedSupabase,
+  userId: string,
+  providerWorkoutIds: string[]
+) {
+  if (!providerWorkoutIds.length) {
+    return new Set<string>();
+  }
+
+  const { data, error } = await supabase
+    .from("source_workouts")
+    .select("provider_workout_id")
+    .eq("user_id", userId)
+    .eq("provider", HEVY_PROVIDER)
+    .in("provider_workout_id", providerWorkoutIds);
+
+  if (error) {
+    throw new HevyImportError(`Unable to load existing Hevy workouts: ${error.message}.`, 500);
+  }
+
+  const rows = (data ?? []) as Array<{ provider_workout_id: string }>;
+  return new Set(rows.map((row) => row.provider_workout_id));
+}
+
+async function resolveWorkoutsForPersistence(
+  supabase: TypedSupabase,
+  userId: string,
+  workouts: GroupedHevyWorkout[]
+) {
+  if (!workouts.length) {
+    return {
+      existingIdSet: new Set<string>(),
+      normalizedWorkouts: [] as GroupedHevyWorkout[]
+    };
+  }
+
+  const existingByGroupKey = await findExistingWorkoutsByGroupKey(
+    supabase,
+    userId,
+    Array.from(new Set(workouts.map((workout) => workout.groupKey)))
+  );
+
+  const normalizedWorkouts = workouts.map((workout) => {
+    const existingWorkout = existingByGroupKey.get(workout.groupKey);
+
+    if (!existingWorkout) {
+      return workout;
+    }
+
+    return {
+      ...workout,
+      providerWorkoutId: existingWorkout.provider_workout_id
+    };
+  });
+  const existingIdSet = await getExistingProviderWorkoutIdSet(
+    supabase,
+    userId,
+    Array.from(new Set(normalizedWorkouts.map((workout) => workout.providerWorkoutId)))
+  );
+
+  return {
+    existingIdSet,
+    normalizedWorkouts
+  };
+}
+
+async function upsertCsvWorkouts(
   supabase: TypedSupabase,
   userId: string,
   dataImportId: string,
   workouts: GroupedHevyWorkout[],
   userTimezone: string | null
 ) {
-  if (!workouts.length) {
+  const { existingIdSet, normalizedWorkouts } = await resolveWorkoutsForPersistence(
+    supabase,
+    userId,
+    workouts
+  );
+
+  if (!normalizedWorkouts.length) {
     return [];
   }
 
-  const payload = workouts.map((workout) =>
+  const payload = normalizedWorkouts.map((workout) =>
     buildGroupedWorkoutPayload(userId, dataImportId, workout, userTimezone)
   );
   const sourceWorkoutsTable =
@@ -168,7 +275,44 @@ async function upsertWorkouts(
     throw new HevyImportError(`Unable to save Hevy workouts: ${error.message}.`, 500);
   }
 
-  return getInsertedImportWorkouts(supabase, userId, dataImportId);
+  return normalizedWorkouts.filter(
+    (workout) => !existingIdSet.has(workout.providerWorkoutId)
+  );
+}
+
+async function upsertApiWorkouts(
+  supabase: TypedSupabase,
+  userId: string,
+  dataImportId: string,
+  workouts: GroupedHevyWorkout[],
+  userTimezone: string | null
+) {
+  const { existingIdSet, normalizedWorkouts } = await resolveWorkoutsForPersistence(
+    supabase,
+    userId,
+    workouts
+  );
+
+  if (!normalizedWorkouts.length) {
+    return [];
+  }
+
+  const payload = normalizedWorkouts.map((workout) =>
+    buildGroupedWorkoutPayload(userId, dataImportId, workout, userTimezone)
+  );
+  const sourceWorkoutsTable =
+    supabase.from("source_workouts") as unknown as UpsertableTable<SourceWorkoutInsert[]>;
+  const { error } = await sourceWorkoutsTable.upsert(payload, {
+    onConflict: "user_id,provider,provider_workout_id"
+  });
+
+  if (error) {
+    throw new HevyImportError(`Unable to save Hevy workouts: ${error.message}.`, 500);
+  }
+
+  return normalizedWorkouts.filter(
+    (workout) => !existingIdSet.has(workout.providerWorkoutId)
+  );
 }
 
 async function upsertDailyEntries(
@@ -260,14 +404,15 @@ export async function persistHevyImport({
   userId: string;
 }): Promise<HevyImportResult> {
   const existingImport = await findExistingImportByHash(supabase, userId, fileHash);
-  const metadata: HevyImportMetadata = {
+  const metadata: HevyCsvImportMetadata = {
     duplicate_of_import_id: existingImport?.id ?? null,
     file_hash: fileHash,
     file_name: fileName,
     file_size: fileSize,
     grouped_workouts: groupedWorkouts.length,
     parsed_rows: parsedRows,
-    skipped_duplicate: Boolean(existingImport)
+    skipped_duplicate: Boolean(existingImport),
+    source: "csv"
   };
   const dataImport = await createDataImport(supabase, userId, metadata);
 
@@ -277,12 +422,13 @@ export async function persistHevyImport({
       duplicateImport: true,
       groupedWorkouts: groupedWorkouts.length,
       insertedWorkouts: 0,
+      operation: "csv_import",
       parsedRows,
       updatedDailyEntries: 0
     };
   }
 
-  const insertedWorkouts = await upsertWorkouts(
+  const insertedWorkouts = await upsertCsvWorkouts(
     supabase,
     userId,
     dataImport.id,
@@ -292,7 +438,7 @@ export async function persistHevyImport({
   const updatedDailyEntries = await upsertDailyEntries(
     supabase,
     userId,
-    insertedWorkouts.map((workout) => workout.workout_date)
+    insertedWorkouts.map((workout) => workout.workoutDate)
   );
 
   return {
@@ -300,7 +446,75 @@ export async function persistHevyImport({
     duplicateImport: false,
     groupedWorkouts: groupedWorkouts.length,
     insertedWorkouts: insertedWorkouts.length,
+    operation: "csv_import",
     parsedRows,
+    updatedDailyEntries
+  };
+}
+
+export async function persistHevyApiSync({
+  deletedEventsIgnored,
+  fetchedWorkouts,
+  groupedWorkouts,
+  parsedRows,
+  since,
+  supabase,
+  syncMode,
+  syncStartedAt,
+  userId,
+  userInfo,
+  userTimezone
+}: {
+  deletedEventsIgnored: number;
+  fetchedWorkouts: number;
+  groupedWorkouts: GroupedHevyWorkout[];
+  parsedRows: number;
+  since: string | null;
+  supabase: TypedSupabase;
+  syncMode: "full" | "incremental";
+  syncStartedAt: string;
+  userId: string;
+  userInfo: {
+    id: string;
+    name: string;
+    url: string;
+  } | null;
+  userTimezone: string | null;
+}): Promise<HevySyncResult> {
+  const metadata: HevyApiImportMetadata = {
+    api_user_id: userInfo?.id ?? null,
+    api_user_name: userInfo?.name ?? null,
+    api_user_url: userInfo?.url ?? null,
+    deleted_events_ignored: deletedEventsIgnored,
+    fetched_workouts: fetchedWorkouts,
+    grouped_workouts: groupedWorkouts.length,
+    parsed_rows: parsedRows,
+    since,
+    source: "api",
+    sync_mode: syncMode,
+    sync_started_at: syncStartedAt
+  };
+  const dataImport = await createDataImport(supabase, userId, metadata);
+  const insertedWorkouts = await upsertApiWorkouts(
+    supabase,
+    userId,
+    dataImport.id,
+    groupedWorkouts,
+    userTimezone
+  );
+  const updatedDailyEntries = await upsertDailyEntries(
+    supabase,
+    userId,
+    insertedWorkouts.map((workout) => workout.workoutDate)
+  );
+
+  return {
+    dataImportId: dataImport.id,
+    deletedEventsIgnored,
+    fetchedWorkouts,
+    insertedWorkouts: insertedWorkouts.length,
+    operation: "api_sync",
+    syncMode,
     updatedDailyEntries
   };
 }
