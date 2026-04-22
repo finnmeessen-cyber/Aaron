@@ -51,6 +51,7 @@ export type HevyImportResult = HevyImportSummary & {
 };
 
 export type HevyApiSyncMode = "full" | "incremental";
+export type HevySyncTriggerSource = "manual" | "cron";
 
 export type HevySyncResult = {
   dataImportId: string;
@@ -58,7 +59,9 @@ export type HevySyncResult = {
   fetchedWorkouts: number;
   insertedWorkouts: number;
   operation: "api_sync";
+  since: string | null;
   syncMode: HevyApiSyncMode;
+  triggerSource: HevySyncTriggerSource;
   updatedDailyEntries: number;
 };
 
@@ -93,9 +96,37 @@ export type HevyApiImportMetadata = {
   source: "api";
   sync_mode: HevyApiSyncMode;
   sync_started_at: string;
+  trigger_source: HevySyncTriggerSource;
 };
 
 export type HevyImportMetadata = HevyCsvImportMetadata | HevyApiImportMetadata;
+
+export type HevyAutoSyncUserResult =
+  | {
+      fetchedWorkouts: number;
+      insertedWorkouts: number;
+      since: string | null;
+      status: "synced";
+      syncMode: HevyApiSyncMode;
+      updatedDailyEntries: number;
+      userId: string;
+    }
+  | {
+      reason: string;
+      status: "failed" | "skipped";
+      userId: string;
+    };
+
+export type HevyAutoSyncSummary = {
+  failed: number;
+  fetchedWorkouts: number;
+  insertedWorkouts: number;
+  processedUsers: number;
+  results: HevyAutoSyncUserResult[];
+  startedAt: string;
+  synced: number;
+  updatedDailyEntries: number;
+};
 
 export type DataImportInsert = TableInsert<"data_imports">;
 export type DataImportRow = TableRow<"data_imports">;

@@ -17,22 +17,25 @@ import {
   HevyImportError
 } from "@/lib/hevy/import";
 import type {
+  HevyAutoSyncUserResult,
   DataImportRow,
   GroupedHevyWorkout,
   HevySyncResult,
   HevySyncStatus,
+  HevySyncTriggerSource,
   ParsedHevyCsvRow
 } from "@/lib/hevy/types";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
-type TypedSupabase = ReturnType<typeof createServerSupabaseClient>;
+type DatabaseSupabase = Pick<ReturnType<typeof createServerSupabaseClient>, "from">;
 type AdminSupabase = ReturnType<typeof createAdminSupabaseClient>;
 type MutationError = { message: string } | null;
 type RpcCallable = {
   rpc: <T>(fn: string, args?: Record<string, unknown>) => Promise<{ data: T | null; error: MutationError }>;
 };
 type HasHevyApiKeyResult = boolean;
+type ListStoredHevyApiKeyUsersResult = Array<{ user_id: string }>;
 type LoadHevyApiKeyResult = string | null;
 
 type SyncCursor = {
@@ -220,7 +223,7 @@ function reduceIncrementalEvents(events: HevyApiWorkoutEvent[]) {
   };
 }
 
-async function getLatestHevyApiImport(supabase: TypedSupabase, userId: string) {
+async function getLatestHevyApiImport(supabase: DatabaseSupabase, userId: string) {
   const { data, error } = await supabase
     .from("data_imports")
     .select("*")
@@ -236,6 +239,21 @@ async function getLatestHevyApiImport(supabase: TypedSupabase, userId: string) {
   }
 
   return (data ?? null) as DataImportRow | null;
+}
+
+async function getUserTimezone(supabase: DatabaseSupabase, userId: string) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("timezone")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw new HevyImportError(`Unable to load the Hevy sync profile: ${error.message}.`, 500);
+  }
+
+  const profile = (data ?? null) as { timezone: string | null } | null;
+  return profile?.timezone ?? null;
 }
 
 function resolveSyncCursor(latestImport: DataImportRow | null): SyncCursor {
@@ -286,6 +304,18 @@ export async function loadStoredHevyApiKey(adminSupabase: AdminSupabase, userId:
   });
 }
 
+export async function listStoredHevyApiKeyUserIds(adminSupabase: AdminSupabase) {
+  const result = await callAdminRpc<ListStoredHevyApiKeyUsersResult>(
+    adminSupabase,
+    "hevy_list_connected_users",
+    {}
+  );
+
+  return (result ?? [])
+    .map((row) => row.user_id)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
 export async function storeHevyApiKey(
   adminSupabase: AdminSupabase,
   userId: string,
@@ -309,7 +339,7 @@ export async function getHevySyncStatus({
   userId
 }: {
   adminSupabase: AdminSupabase;
-  supabase: TypedSupabase;
+  supabase: DatabaseSupabase;
   userId: string;
 }): Promise<HevySyncStatus> {
   const [hasStoredKey, latestImport] = await Promise.all([
@@ -344,11 +374,13 @@ export async function getHevySyncStatus({
 export async function syncHevyWorkouts({
   apiKey,
   supabase,
+  triggerSource = "manual",
   userId,
   userTimezone
 }: {
   apiKey: string;
-  supabase: TypedSupabase;
+  supabase: DatabaseSupabase;
+  triggerSource?: HevySyncTriggerSource;
   userId: string;
   userTimezone: string | null;
 }): Promise<HevySyncResult> {
@@ -381,10 +413,83 @@ export async function syncHevyWorkouts({
     supabase,
     syncMode,
     syncStartedAt,
+    triggerSource,
     userId,
     userInfo,
     userTimezone
   });
 
   return result;
+}
+
+export async function runManualHevySync({
+  adminSupabase,
+  providedApiKey,
+  supabase,
+  userId
+}: {
+  adminSupabase: AdminSupabase;
+  providedApiKey: string | null;
+  supabase: DatabaseSupabase;
+  userId: string;
+}) {
+  const storedApiKey = providedApiKey ?? (await loadStoredHevyApiKey(adminSupabase, userId));
+
+  if (!storedApiKey) {
+    throw new HevyImportError("Add your Hevy API key first to start the sync.", 400);
+  }
+
+  const userTimezone = await getUserTimezone(supabase, userId);
+  const result = await syncHevyWorkouts({
+    apiKey: storedApiKey,
+    supabase,
+    triggerSource: "manual",
+    userId,
+    userTimezone
+  });
+
+  if (providedApiKey) {
+    await storeHevyApiKey(adminSupabase, userId, providedApiKey);
+  }
+
+  return result;
+}
+
+export async function syncStoredHevyWorkoutsForUser({
+  adminSupabase,
+  supabase,
+  userId
+}: {
+  adminSupabase: AdminSupabase;
+  supabase: DatabaseSupabase;
+  userId: string;
+}): Promise<HevyAutoSyncUserResult> {
+  const storedApiKey = await loadStoredHevyApiKey(adminSupabase, userId);
+
+  if (!storedApiKey) {
+    return {
+      reason: "No stored Hevy API key was available for this user.",
+      status: "skipped",
+      userId
+    };
+  }
+
+  const userTimezone = await getUserTimezone(supabase, userId);
+  const result = await syncHevyWorkouts({
+    apiKey: storedApiKey,
+    supabase,
+    triggerSource: "cron",
+    userId,
+    userTimezone
+  });
+
+  return {
+    fetchedWorkouts: result.fetchedWorkouts,
+    insertedWorkouts: result.insertedWorkouts,
+    since: result.since,
+    status: "synced",
+    syncMode: result.syncMode,
+    updatedDailyEntries: result.updatedDailyEntries,
+    userId
+  };
 }

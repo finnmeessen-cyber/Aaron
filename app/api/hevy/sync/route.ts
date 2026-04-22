@@ -7,9 +7,7 @@ import { HevyImportError } from "@/lib/hevy/import";
 import {
   deleteStoredHevyApiKey,
   getHevySyncStatus,
-  loadStoredHevyApiKey,
-  storeHevyApiKey,
-  syncHevyWorkouts
+  runManualHevySync
 } from "@/lib/hevy/sync";
 import { hasSupabaseServiceEnv } from "@/lib/supabase/env";
 
@@ -98,28 +96,12 @@ export async function POST(request: Request) {
     const adminSupabase = createAdminSupabaseClient();
     const requestBody = (await request.json().catch(() => ({}))) as SyncRequestBody;
     const providedApiKey = validateProvidedApiKey(normalizeApiKey(requestBody.apiKey));
-    const storedApiKey = providedApiKey ?? (await loadStoredHevyApiKey(adminSupabase, user.id));
-
-    if (!storedApiKey) {
-      throw new HevyImportError("Add your Hevy API key first to start the sync.", 400);
-    }
-
-    const { data: profileData } = await supabase
-      .from("profiles")
-      .select("timezone")
-      .eq("id", user.id)
-      .maybeSingle();
-    const profile = (profileData ?? null) as { timezone: string } | null;
-    const result = await syncHevyWorkouts({
-      apiKey: storedApiKey,
+    const result = await runManualHevySync({
+      adminSupabase,
+      providedApiKey,
       supabase,
-      userId: user.id,
-      userTimezone: profile?.timezone ?? null
+      userId: user.id
     });
-
-    if (providedApiKey) {
-      await storeHevyApiKey(adminSupabase, user.id, providedApiKey);
-    }
 
     return NextResponse.json(result);
   } catch (error) {

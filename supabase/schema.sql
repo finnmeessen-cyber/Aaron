@@ -384,6 +384,17 @@ begin
 end;
 $$;
 
+create or replace function public.hevy_list_connected_users()
+returns table(user_id uuid)
+language sql
+security definer
+set search_path = public, private
+as $$
+  select connection.user_id
+  from private.hevy_api_connections connection
+  order by connection.user_id;
+$$;
+
 drop trigger if exists user_settings_sync_phase_started_at on public.user_settings;
 create trigger user_settings_sync_phase_started_at
 before insert or update on public.user_settings
@@ -724,8 +735,10 @@ revoke all on function public.hevy_has_api_key(uuid) from public, anon, authenti
 revoke all on function public.hevy_load_api_key(uuid) from public, anon, authenticated;
 revoke all on function public.hevy_store_api_key(uuid, text) from public, anon, authenticated;
 revoke all on function public.hevy_delete_api_key(uuid) from public, anon, authenticated;
+revoke all on function public.hevy_list_connected_users() from public, anon, authenticated;
 
 grant execute on function public.hevy_has_api_key(uuid) to service_role;
 grant execute on function public.hevy_load_api_key(uuid) to service_role;
 grant execute on function public.hevy_store_api_key(uuid, text) to service_role;
 grant execute on function public.hevy_delete_api_key(uuid) to service_role;
+grant execute on function public.hevy_list_connected_users() to service_role;

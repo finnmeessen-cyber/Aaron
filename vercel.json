@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/hevy/sync/auto",
+      "schedule": "0 */6 * * *"
+    }
+  ]
+}

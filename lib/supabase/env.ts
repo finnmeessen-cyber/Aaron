@@ -8,6 +8,10 @@ export function hasSupabaseServiceEnv() {
   return Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.NEXT_PUBLIC_SUPABASE_URL);
 }
 
+export function hasCronSecretEnv() {
+  return Boolean(process.env.CRON_SECRET);
+}
+
 export function getSupabaseEnv() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -32,4 +36,14 @@ export function getSupabaseServiceEnv() {
   }
 
   return { serviceRoleKey, url };
+}
+
+export function getCronSecret() {
+  const cronSecret = process.env.CRON_SECRET;
+
+  if (!cronSecret) {
+    throw new Error("Missing CRON_SECRET. Add CRON_SECRET to protect scheduled Hevy sync.");
+  }
+
+  return cronSecret;
 }

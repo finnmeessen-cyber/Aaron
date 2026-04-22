@@ -8,13 +8,14 @@ import {
   type HevyApiImportMetadata,
   type HevyCsvImportMetadata,
   type HevyImportResult,
+  type HevySyncTriggerSource,
   type HevySyncResult,
   type SourceWorkoutInsert
 } from "@/lib/hevy/types";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import type { Json, TableRow } from "@/types/supabase";
 
-type TypedSupabase = ReturnType<typeof createServerSupabaseClient>;
+type DatabaseSupabase = Pick<ReturnType<typeof createServerSupabaseClient>, "from">;
 type MutationError = { message: string } | null;
 type ExistingSourceWorkoutRow = Pick<
   TableRow<"source_workouts">,
@@ -101,7 +102,7 @@ function buildGroupedWorkoutPayload(
 }
 
 async function findExistingImportByHash(
-  supabase: TypedSupabase,
+  supabase: DatabaseSupabase,
   userId: string,
   fileHash: string
 ) {
@@ -123,7 +124,7 @@ async function findExistingImportByHash(
 }
 
 async function createDataImport(
-  supabase: TypedSupabase,
+  supabase: DatabaseSupabase,
   userId: string,
   metadata: HevyCsvImportMetadata | HevyApiImportMetadata
 ) {
@@ -145,7 +146,7 @@ async function createDataImport(
 }
 
 async function findExistingWorkoutsByGroupKey(
-  supabase: TypedSupabase,
+  supabase: DatabaseSupabase,
   userId: string,
   groupKeys: string[]
 ) {
@@ -179,7 +180,7 @@ async function findExistingWorkoutsByGroupKey(
 }
 
 async function getExistingProviderWorkoutIdSet(
-  supabase: TypedSupabase,
+  supabase: DatabaseSupabase,
   userId: string,
   providerWorkoutIds: string[]
 ) {
@@ -203,7 +204,7 @@ async function getExistingProviderWorkoutIdSet(
 }
 
 async function resolveWorkoutsForPersistence(
-  supabase: TypedSupabase,
+  supabase: DatabaseSupabase,
   userId: string,
   workouts: GroupedHevyWorkout[]
 ) {
@@ -245,7 +246,7 @@ async function resolveWorkoutsForPersistence(
 }
 
 async function upsertCsvWorkouts(
-  supabase: TypedSupabase,
+  supabase: DatabaseSupabase,
   userId: string,
   dataImportId: string,
   workouts: GroupedHevyWorkout[],
@@ -281,7 +282,7 @@ async function upsertCsvWorkouts(
 }
 
 async function upsertApiWorkouts(
-  supabase: TypedSupabase,
+  supabase: DatabaseSupabase,
   userId: string,
   dataImportId: string,
   workouts: GroupedHevyWorkout[],
@@ -316,7 +317,7 @@ async function upsertApiWorkouts(
 }
 
 async function upsertDailyEntries(
-  supabase: TypedSupabase,
+  supabase: DatabaseSupabase,
   userId: string,
   workoutDates: string[]
 ) {
@@ -399,7 +400,7 @@ export async function persistHevyImport({
   fileSize: number;
   groupedWorkouts: GroupedHevyWorkout[];
   parsedRows: number;
-  supabase: TypedSupabase;
+  supabase: DatabaseSupabase;
   userTimezone: string | null;
   userId: string;
 }): Promise<HevyImportResult> {
@@ -461,6 +462,7 @@ export async function persistHevyApiSync({
   supabase,
   syncMode,
   syncStartedAt,
+  triggerSource,
   userId,
   userInfo,
   userTimezone
@@ -470,9 +472,10 @@ export async function persistHevyApiSync({
   groupedWorkouts: GroupedHevyWorkout[];
   parsedRows: number;
   since: string | null;
-  supabase: TypedSupabase;
+  supabase: DatabaseSupabase;
   syncMode: "full" | "incremental";
   syncStartedAt: string;
+  triggerSource: HevySyncTriggerSource;
   userId: string;
   userInfo: {
     id: string;
@@ -492,7 +495,8 @@ export async function persistHevyApiSync({
     since,
     source: "api",
     sync_mode: syncMode,
-    sync_started_at: syncStartedAt
+    sync_started_at: syncStartedAt,
+    trigger_source: triggerSource
   };
   const dataImport = await createDataImport(supabase, userId, metadata);
   const insertedWorkouts = await upsertApiWorkouts(
@@ -514,7 +518,9 @@ export async function persistHevyApiSync({
     fetchedWorkouts,
     insertedWorkouts: insertedWorkouts.length,
     operation: "api_sync",
+    since,
     syncMode,
+    triggerSource,
     updatedDailyEntries
   };
 }
