@@ -73,6 +73,19 @@ function parseApiTimestamp(
 }
 
 function buildWallClockUtcIsoForTimezone(date: Date, timeZone: string | null) {
+  const parts = getWallClockPartsForTimezone(date, timeZone);
+
+  return buildWallClockUtcIsoFromDateParts(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second)
+  );
+}
+
+function getWallClockPartsForTimezone(date: Date, timeZone: string | null) {
   const formatter = new Intl.DateTimeFormat("en-CA", {
     day: "2-digit",
     hour: "2-digit",
@@ -90,14 +103,7 @@ function buildWallClockUtcIsoForTimezone(date: Date, timeZone: string | null) {
       .map((part) => [part.type, part.value])
   ) as Record<"day" | "hour" | "minute" | "month" | "second" | "year", string>;
 
-  return buildWallClockUtcIsoFromDateParts(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour),
-    Number(parts.minute),
-    Number(parts.second)
-  );
+  return parts;
 }
 
 function buildSyntheticRows(workout: HevyApiWorkout, startTime: string, endTime: string) {
@@ -215,9 +221,11 @@ function transformHevyApiWorkout(
     throw new HevyImportError(`Hevy workout ${workout.id} has an end_time earlier than start_time.`);
   }
 
+  const startWallClockParts = getWallClockPartsForTimezone(startTimestamp.date, userTimezone);
   const bridgeStartIso = buildWallClockUtcIsoForTimezone(startTimestamp.date, userTimezone);
   const bridgeEndIso = buildWallClockUtcIsoForTimezone(endTimestamp.date, userTimezone);
   const groupKey = buildHevyWorkoutGroupKey(title, bridgeStartIso, bridgeEndIso);
+  const workoutDate = `${startWallClockParts.year}-${startWallClockParts.month}-${startWallClockParts.day}`;
 
   return {
     durationMinutes: differenceInMinutes(endTimestamp.date, startTimestamp.date),
@@ -231,7 +239,7 @@ function transformHevyApiWorkout(
     startedAtIso: startTimestamp.iso,
     startTime: startTimestamp.original,
     title,
-    workoutDate: startTimestamp.dateKey
+    workoutDate
   };
 }
 

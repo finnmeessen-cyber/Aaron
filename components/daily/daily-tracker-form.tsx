@@ -18,9 +18,11 @@ import type { DailyPageData } from "@/lib/data";
 import {
   type DailyChecklistItemMutationResult,
   type DailyTrackingMutationResult,
+  saveDailyChecklistGroupMutation,
   saveDailyChecklistItemMutation,
   saveDailyTrackingMutation
 } from "@/lib/mutations";
+import { getTrackedSupplementSections } from "@/lib/supplement-tracking";
 import {
   getAuthenticatedClientContext,
   notifyAppDataMutation,
@@ -61,6 +63,15 @@ type ActiveSection = "metrics" | "checklists";
 type ChecklistTemplateWithCompletion = DailyPageData["checklistTemplates"][number] & {
   completed: boolean;
 };
+
+const SUPPLEMENT_TODO_TASKS = {
+  evening: "evening-supplements",
+  morning: "morning-supplements"
+} as const;
+
+const SUPPLEMENT_TODO_SECTIONS_BY_TASK_ID = Object.fromEntries(
+  Object.entries(SUPPLEMENT_TODO_TASKS).map(([section, taskId]) => [taskId, section])
+) as Record<string, string>;
 
 function withMutationDetail(message: string, detail?: string | null) {
   return detail ? `${message} Details: ${detail}` : message;
@@ -185,8 +196,10 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
   const [status, setStatus] = useState<StatusState>({ tone: "muted", message: null });
   const [loading, setLoading] = useState(false);
   const [syncingChecklistKey, setSyncingChecklistKey] = useState<string | null>(null);
+  const [syncingSupplementTaskId, setSyncingSupplementTaskId] = useState<string | null>(null);
   const checklistStateRef = useRef<Record<string, boolean>>(buildChecklistState(props));
   const checklistRequestVersionRef = useRef<Record<string, number>>({});
+  const supplementTaskRequestVersionRef = useRef<Record<string, number>>({});
   const checklistSyncQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
@@ -218,6 +231,50 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
     return percentage(completed, values.length || 1);
   }, [checklist]);
 
+  const supplementTodoTasks = useMemo(() => {
+    return getTrackedSupplementSections(checklistTemplates, props.supplementLogMeta)
+      .flatMap((section) => {
+        const taskId = SUPPLEMENT_TODO_TASKS[section.section as keyof typeof SUPPLEMENT_TODO_TASKS];
+
+        if (!taskId) {
+          return [];
+        }
+
+        return [
+          {
+            checked: section.templateKeys.every(
+              (templateKey) => checklist[templateKey] ?? false
+            ),
+            count: section.supplementIds.length,
+            pending: syncingSupplementTaskId === taskId,
+            taskId,
+            templateKeys: section.templateKeys
+          } satisfies {
+          checked: boolean;
+          count: number;
+          pending: boolean;
+          taskId: string;
+          templateKeys: string[];
+            }
+        ];
+      });
+  }, [checklist, checklistTemplates, props.supplementLogMeta, syncingSupplementTaskId]);
+
+  const supplementTodoTaskStates = useMemo(
+    () =>
+      Object.fromEntries(
+        supplementTodoTasks.map((task) => [
+          task.taskId,
+          {
+            checked: task.checked,
+            count: task.count,
+            pending: task.pending
+          }
+        ])
+      ),
+    [supplementTodoTasks]
+  );
+
   function navigateToDate(date: string) {
     if (!date) {
       return;
@@ -231,6 +288,10 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
     return checklistRequestVersionRef.current[templateKey] === requestVersion;
   }
 
+  function isLatestSupplementTaskRequest(taskId: string, requestVersion: number) {
+    return supplementTaskRequestVersionRef.current[taskId] === requestVersion;
+  }
+
   function updateChecklistState(nextChecklistState: Record<string, boolean>) {
     checklistStateRef.current = nextChecklistState;
     setChecklist(nextChecklistState);
@@ -240,6 +301,13 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
     updateChecklistState({
       ...checklistStateRef.current,
       [templateKey]: value
+    });
+  }
+
+  function revertChecklistValues(values: Record<string, boolean>) {
+    updateChecklistState({
+      ...checklistStateRef.current,
+      ...values
     });
   }
 
@@ -395,6 +463,112 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         });
       } finally {
         setSyncingChecklistKey((current) => (current === templateKey ? null : current));
+      }
+    });
+  }
+
+  async function persistSupplementTaskToggle(taskId: string, checked: boolean) {
+    if (loading) {
+      setStatus({
+        tone: "warning",
+        message: "Daily-Save läuft bereits. Bitte kurz warten."
+      });
+      return;
+    }
+
+    if (!SUPPLEMENT_TODO_SECTIONS_BY_TASK_ID[taskId]) {
+      return;
+    }
+
+    const supplementTask = supplementTodoTasks.find((task) => task.taskId === taskId);
+
+    if (!supplementTask?.templateKeys.length) {
+      return;
+    }
+
+    const previousValues = Object.fromEntries(
+      supplementTask.templateKeys.map((templateKey) => [
+        templateKey,
+        checklistStateRef.current[templateKey] ?? false
+      ])
+    );
+    const nextChecklistState = { ...checklistStateRef.current };
+
+    for (const templateKey of supplementTask.templateKeys) {
+      nextChecklistState[templateKey] = checked;
+    }
+
+    const requestVersion = (supplementTaskRequestVersionRef.current[taskId] ?? 0) + 1;
+
+    supplementTaskRequestVersionRef.current[taskId] = requestVersion;
+    updateChecklistState(nextChecklistState);
+
+    if (isBrowserOffline()) {
+      setStatus({
+        tone: "warning",
+        message: getOfflineMessage(
+          "Supplemente bleiben lokal markiert, der Sync läuft nach dem nächsten Speichern."
+        )
+      });
+      return;
+    }
+
+    void enqueueChecklistSync(async () => {
+      if (!isLatestSupplementTaskRequest(taskId, requestVersion)) {
+        return;
+      }
+
+      setSyncingSupplementTaskId(taskId);
+
+      try {
+        const { supabase, userId } = await getAuthenticatedClientContext();
+
+        if (!userId) {
+          if (!isLatestSupplementTaskRequest(taskId, requestVersion)) {
+            return;
+          }
+
+          revertChecklistValues(previousValues);
+          setStatus({ tone: "danger", message: "Session abgelaufen. Bitte erneut einloggen." });
+          return;
+        }
+
+        const mutationResult = await saveDailyChecklistGroupMutation({
+          checked,
+          checklistState: checklistStateRef.current,
+          checklistTemplates: props.checklistTemplates,
+          entryDate: selectedDate,
+          supplementLogMeta: props.supplementLogMeta,
+          supabase,
+          templateKeys: supplementTask.templateKeys,
+          userId
+        });
+
+        if (!isLatestSupplementTaskRequest(taskId, requestVersion)) {
+          return;
+        }
+
+        if (mutationResult.status === "failed") {
+          revertChecklistValues(previousValues);
+        }
+
+        setStatus(resolveChecklistSaveStatus(mutationResult));
+
+        if (mutationResult.status !== "failed") {
+          notifyAppDataMutation();
+        }
+      } catch {
+        if (!isLatestSupplementTaskRequest(taskId, requestVersion)) {
+          return;
+        }
+
+        revertChecklistValues(previousValues);
+        setStatus({
+          tone: "danger",
+          message: "Supplemente konnten nicht gespeichert werden."
+        });
+      } finally {
+        setSyncingSupplementTaskId((current) => (current === taskId ? null : current));
       }
     });
   }
@@ -560,8 +734,11 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
 
       <DailyTodoList
         dayType={form.day_type}
+        onToggleSupplementTask={(taskId, checked) =>
+          void persistSupplementTaskToggle(taskId, checked)
+        }
         selectedDate={selectedDate}
-        supplementCount={props.supplementLogMeta.length}
+        supplementTaskStates={supplementTodoTaskStates}
         timezone={props.timezone}
       />
 

@@ -260,6 +260,66 @@ export async function saveDailyChecklistItemMutation({
   };
 }
 
+export async function saveDailyChecklistGroupMutation({
+  checked,
+  checklistState,
+  checklistTemplates,
+  entryDate,
+  supplementLogMeta,
+  supabase,
+  templateKeys,
+  userId
+}: {
+  checked: boolean;
+  checklistState: Record<string, boolean>;
+  checklistTemplates: ChecklistTemplate[];
+  entryDate: string;
+  supplementLogMeta: SupplementLogMeta[];
+  supabase: TypedSupabase;
+  templateKeys: string[];
+  userId: string;
+}): Promise<DailyChecklistItemMutationResult> {
+  const checklistPayload: DailyChecklistInsert[] = templateKeys.map((templateKey) => ({
+    completed: checked,
+    entry_date: entryDate,
+    template_key: templateKey,
+    user_id: userId
+  }));
+
+  const dailyChecklistTable =
+    supabase.from("daily_checklists") as unknown as UpsertableTable<DailyChecklistInsert[]>;
+  const { error } = await dailyChecklistTable.upsert(checklistPayload, {
+    onConflict: "user_id,entry_date,template_key"
+  });
+
+  if (error) {
+    return {
+      checklistError: error.message,
+      checklistSaved: false,
+      status: "failed",
+      supplementLogError: null,
+      supplementLogsSaved: false
+    };
+  }
+
+  const supplementLogResult = await syncSupplementLogs(
+    supabase,
+    userId,
+    entryDate,
+    checklistTemplates,
+    checklistState,
+    supplementLogMeta
+  );
+
+  return {
+    checklistError: null,
+    checklistSaved: true,
+    status: supplementLogResult.error ? "partial" : "success",
+    supplementLogError: supplementLogResult.error,
+    supplementLogsSaved: !supplementLogResult.error
+  };
+}
+
 export async function savePhaseMutation({
   currentPhaseSlug,
   supabase,

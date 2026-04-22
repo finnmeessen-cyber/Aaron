@@ -7,7 +7,7 @@ export type DailyTodoItem = {
 export type DailyTodoSourceInput = {
   date: string;
   dayType: "training" | "rest";
-  supplementCount: number;
+  supplementTaskCounts?: Record<string, number>;
   timezone?: string | null;
 };
 
@@ -85,28 +85,37 @@ const BASE_TODO_ITEMS: Record<DailyTodoSourceInput["dayType"], DailyTodoItem[]> 
   ]
 };
 
-function withSupplementLabels(items: DailyTodoItem[], supplementCount: number) {
-  if (supplementCount <= 0) {
-    return items.filter((item) => !item.id.includes("supplements"));
-  }
+function withSupplementLabels(
+  items: DailyTodoItem[],
+  supplementTaskCounts: Record<string, number>
+) {
+  return items
+    .filter((item) => {
+      if (!item.id.includes("supplements")) {
+        return true;
+      }
 
-  return items.map((item) => {
-    if (!item.id.includes("supplements")) {
-      return item;
-    }
+      return (supplementTaskCounts[item.id] ?? 0) > 0;
+    })
+    .map((item) => {
+      if (!item.id.includes("supplements")) {
+        return item;
+      }
 
-    return {
-      ...item,
-      title: `${item.title} (${supplementCount})`
-    };
-  });
+      const supplementCount = supplementTaskCounts[item.id] ?? 0;
+
+      return {
+        ...item,
+        title: `${item.title} (${supplementCount})`
+      };
+    });
 }
 
 export const mockDailyTodoSource: DailyTodoSource = ({
   dayType,
-  supplementCount
+  supplementTaskCounts = {}
 }: DailyTodoSourceInput) => {
-  return withSupplementLabels(BASE_TODO_ITEMS[dayType], supplementCount);
+  return withSupplementLabels(BASE_TODO_ITEMS[dayType], supplementTaskCounts);
 };
 
 export function getDailyTodoItems(

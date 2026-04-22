@@ -9,7 +9,10 @@ import {
   resolveEntryStatus,
   toChartSeries
 } from "@/lib/analytics";
-import { getTrackedSupplementIds } from "@/lib/supplement-tracking";
+import {
+  filterChecklistTemplatesByActiveSupplements,
+  getTrackedSupplementIds
+} from "@/lib/supplement-tracking";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import type { TableRow } from "@/types/supabase";
 import {
@@ -441,16 +444,26 @@ export async function getDailyPageData(
   const settingsRow: UserSettings | null = settings ?? null;
   const supplementCatalogRows: SupplementCatalogSummary[] = supplementCatalog ?? [];
   const userSupplementRows: UserSupplementStatus[] = userSupplements ?? [];
+  const supplementLogMeta = buildSupplementLogMeta(supplementCatalogRows, userSupplementRows);
+  const visibleChecklistTemplateRows = filterChecklistTemplatesByActiveSupplements(
+    checklistTemplateRows,
+    supplementLogMeta
+  );
+  const visibleChecklistTemplateKeys = new Set(
+    visibleChecklistTemplateRows.map((template) => template.template_key)
+  );
 
   return {
     selectedDate: effectiveSelectedDate,
     timezone,
     entry: entryRow,
-    checklistTemplates: checklistTemplateRows,
-    checklistStates: checklistStateRows,
+    checklistTemplates: visibleChecklistTemplateRows,
+    checklistStates: checklistStateRows.filter((state) =>
+      visibleChecklistTemplateKeys.has(state.template_key)
+    ),
     dayTemplates: dayTemplateRows,
     settings: settingsRow,
-    supplementLogMeta: buildSupplementLogMeta(supplementCatalogRows, userSupplementRows)
+    supplementLogMeta
   };
 }
 

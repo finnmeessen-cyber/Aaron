@@ -12,6 +12,17 @@ function buildStorageKey(date: string) {
   return `${STORAGE_KEY_PREFIX}:${date}`;
 }
 
+function resolveCurrentMinutes(date: string, timezone?: string | null) {
+  const now = new Date();
+  const todayDate = toDateInputValue(now, timezone);
+
+  if (date !== todayDate) {
+    return null;
+  }
+
+  return now.getHours() * 60 + now.getMinutes();
+}
+
 function readStoredCheckedIds(date: string) {
   if (typeof window === "undefined") {
     return [];
@@ -36,18 +47,21 @@ function readStoredCheckedIds(date: string) {
 function TodoRow({
   checked,
   item,
-  onToggle
+  onToggle,
+  pending = false
 }: {
   checked: boolean;
   item: DailyTodoItem;
   onToggle: () => void;
+  pending?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onToggle}
+      disabled={pending}
       className={cn(
-        "grid w-full grid-cols-[4.25rem_1fr_2rem] items-center gap-3 rounded-2xl border border-border px-4 py-3 text-left transition hover:border-primary/40 hover:bg-muted/70",
+        "grid w-full grid-cols-[4.25rem_1fr_2rem] items-center gap-3 rounded-2xl border border-border px-4 py-3 text-left transition hover:border-primary/40 hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-70",
         checked && "border-primary/30 bg-primary/10"
       )}
       aria-pressed={checked}
@@ -78,19 +92,40 @@ function TodoRow({
 export function DailyTodoList({
   dayType,
   selectedDate,
-  supplementCount,
+  supplementTaskStates = {},
+  onToggleSupplementTask,
   timezone
 }: {
   dayType: "training" | "rest";
+  onToggleSupplementTask?: (taskId: string, checked: boolean) => void;
   selectedDate: string;
-  supplementCount: number;
+  supplementTaskStates?: Record<string, { checked: boolean; count: number; pending?: boolean }>;
   timezone?: string | null;
 }) {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
+  const [currentMinutes, setCurrentMinutes] = useState<number | null>(null);
 
   useEffect(() => {
     setCheckedIds(readStoredCheckedIds(selectedDate));
   }, [selectedDate]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const updateCurrentMinutes = () => {
+      setCurrentMinutes(resolveCurrentMinutes(selectedDate, timezone));
+    };
+
+    updateCurrentMinutes();
+
+    const interval = window.setInterval(updateCurrentMinutes, 60_000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [selectedDate, timezone]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -118,31 +153,29 @@ export function DailyTodoList({
     };
   }, [selectedDate]);
 
+  const supplementTaskCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(supplementTaskStates).map(([taskId, state]) => [taskId, state.count])
+      ),
+    [supplementTaskStates]
+  );
+
   const tasks = useMemo(
     () =>
       getDailyTodoItems({
         date: selectedDate,
         dayType,
-        supplementCount,
+        supplementTaskCounts,
         timezone
       }),
-    [dayType, selectedDate, supplementCount, timezone]
+    [dayType, selectedDate, supplementTaskCounts, timezone]
   );
-
-  const todayDate = toDateInputValue(new Date(), timezone);
-  const currentMinutes = useMemo(() => {
-    if (selectedDate !== todayDate) {
-      return null;
-    }
-
-    const now = new Date();
-    return now.getHours() * 60 + now.getMinutes();
-  }, [selectedDate, todayDate]);
 
   const sortedTasks = useMemo(() => {
     return [...tasks].sort((left, right) => {
-      const leftChecked = checkedIds.includes(left.id);
-      const rightChecked = checkedIds.includes(right.id);
+      const leftChecked = supplementTaskStates[left.id]?.checked ?? checkedIds.includes(left.id);
+      const rightChecked = supplementTaskStates[right.id]?.checked ?? checkedIds.includes(right.id);
 
       if (leftChecked !== rightChecked) {
         return leftChecked ? 1 : -1;
@@ -159,9 +192,16 @@ export function DailyTodoList({
 
       return left.time.localeCompare(right.time);
     });
-  }, [checkedIds, currentMinutes, tasks]);
+  }, [checkedIds, currentMinutes, supplementTaskStates, tasks]);
 
   function handleToggle(taskId: string) {
+    const supplementTaskState = supplementTaskStates[taskId];
+
+    if (supplementTaskState && onToggleSupplementTask) {
+      onToggleSupplementTask(taskId, !supplementTaskState.checked);
+      return;
+    }
+
     const nextCheckedIds = checkedIds.includes(taskId)
       ? checkedIds.filter((checkedId) => checkedId !== taskId)
       : [...checkedIds, taskId];
@@ -186,8 +226,9 @@ export function DailyTodoList({
         {sortedTasks.map((task) => (
           <TodoRow
             key={task.id}
-            checked={checkedIds.includes(task.id)}
+            checked={supplementTaskStates[task.id]?.checked ?? checkedIds.includes(task.id)}
             item={task}
+            pending={supplementTaskStates[task.id]?.pending}
             onToggle={() => handleToggle(task.id)}
           />
         ))}

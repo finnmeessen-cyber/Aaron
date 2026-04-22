@@ -10,6 +10,10 @@ import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { getCronSecret, hasCronSecretEnv, hasSupabaseServiceEnv } from "@/lib/supabase/env";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
+
+const DEFAULT_AUTO_SYNC_LIMIT = 20;
+const MAX_AUTO_SYNC_LIMIT = 50;
 
 function toErrorResponse(error: unknown) {
   if (error instanceof HevyImportError || error instanceof HevyApiError) {
@@ -47,7 +51,7 @@ function parseLimit(request: NextRequest) {
   const rawLimit = request.nextUrl.searchParams.get("limit");
 
   if (!rawLimit) {
-    return null;
+    return DEFAULT_AUTO_SYNC_LIMIT;
   }
 
   const parsedLimit = Number.parseInt(rawLimit, 10);
@@ -56,7 +60,7 @@ function parseLimit(request: NextRequest) {
     throw new HevyImportError("The auto-sync limit must be a positive integer.", 400);
   }
 
-  return Math.min(parsedLimit, 200);
+  return Math.min(parsedLimit, MAX_AUTO_SYNC_LIMIT);
 }
 
 export async function GET(request: NextRequest) {
@@ -67,7 +71,7 @@ export async function GET(request: NextRequest) {
     const startedAt = new Date().toISOString();
     const limit = parseLimit(request);
     const userIds = await listStoredHevyApiKeyUserIds(adminSupabase);
-    const selectedUserIds = limit ? userIds.slice(0, limit) : userIds;
+    const selectedUserIds = userIds.slice(0, limit);
     const results: Awaited<ReturnType<typeof syncStoredHevyWorkoutsForUser>>[] = [];
     let synced = 0;
     let failed = 0;
@@ -110,6 +114,7 @@ export async function GET(request: NextRequest) {
       failed,
       fetchedWorkouts,
       insertedWorkouts,
+      remainingUsers: Math.max(0, userIds.length - selectedUserIds.length),
       processedUsers: selectedUserIds.length,
       results,
       startedAt,
