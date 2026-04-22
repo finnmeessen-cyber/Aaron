@@ -31,14 +31,14 @@ export default async function SettingsPage() {
   const data = await getSettingsPageData(supabase, user.id);
 
   return (
-    <PageShell className="gap-6">
+    <PageShell className="gap-5">
       <PageHeader
         eyebrow="Settings"
         title="Einstellungen"
         description="Steuere Makros, Trainingstage, Theme, aktive Supplements und aktuelle Phase zentral an einem Ort."
       />
       <Card className="space-y-4 p-5 md:p-6">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-primary">
               <Upload className="h-4 w-4" />
@@ -46,15 +46,15 @@ export default async function SettingsPage() {
             </div>
             <div>
               <CardTitle className="text-xl">Hevy CSV importieren</CardTitle>
-              <CardDescription className="mt-2">
-                Öffne die Import-Seite, um einen exportierten Hevy Workout-CSV hochzuladen und
-                Trainingstage automatisch zu markieren.
+              <CardDescription className="mt-1.5">
+                Öffne die Import-Seite, um einen Hevy Workout-CSV hochzuladen und Trainingstage
+                automatisch zu markieren.
               </CardDescription>
             </div>
           </div>
           <Link
             href={HEVY_IMPORT_ROUTE}
-            className="inline-flex min-h-12 items-center justify-center rounded-2xl border border-border bg-card px-5 text-sm font-medium transition hover:border-primary/40 hover:bg-muted"
+            className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl border border-border bg-card px-5 text-sm font-medium transition hover:border-primary/40 hover:bg-muted md:w-auto"
           >
             Import öffnen
             <ArrowRight className="ml-2 h-4 w-4" />

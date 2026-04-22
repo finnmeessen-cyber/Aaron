@@ -10,8 +10,8 @@ export function BottomNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-border/80 bg-background/90 px-2 pb-2 pt-2 backdrop-blur md:hidden">
-      <div className="mx-auto grid max-w-2xl grid-cols-3 gap-2">
+    <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-border/80 bg-background/90 px-2 pb-1.5 pt-1.5 backdrop-blur md:hidden">
+      <div className="mx-auto grid max-w-2xl grid-cols-3 gap-1.5">
         {BOTTOM_NAV_ITEMS.map((item) => {
           const active =
             pathname.startsWith(item.href) ||
@@ -23,7 +23,7 @@ export function BottomNav() {
               href={item.href}
               prefetch={false}
               className={cn(
-                "flex min-h-14 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-medium transition",
+                "flex min-h-[3.25rem] flex-col items-center justify-center gap-0.5 rounded-2xl px-2 text-[11px] font-medium transition",
                 active ? "bg-primary/15 text-primary" : "text-muted-foreground"
               )}
             >

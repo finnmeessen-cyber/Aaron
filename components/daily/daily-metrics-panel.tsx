@@ -56,12 +56,12 @@ export function DailyMetricsPanel({
   trainingCompleted
 }: DailyMetricsPanelProps) {
   return (
-    <Card className="space-y-5">
+    <Card className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <CardTitle>Metrics / Tagesdaten</CardTitle>
-          <CardDescription className="mt-2">
-            Gewicht, Scores, Kalorien und Notizen kompakt in einem Block.
+          <CardDescription className="mt-1.5">
+            Gewicht, Scores, Kalorien und Notizen in einem Block.
           </CardDescription>
         </div>
         {showChecklistShortcut && onShowChecklists ? (
@@ -176,9 +176,7 @@ export function DailyMetricsPanel({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-semibold">Daily Save</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Metriken und Notizen gesammelt sichern, Checklisten bleiben direkt klickbar.
-            </p>
+            <p className="mt-1 text-sm text-muted-foreground">Metriken und Notizen gesammelt sichern.</p>
           </div>
           <Button onClick={onSave} disabled={loading} className="w-full sm:w-auto">
             <Save className="mr-2 h-4 w-4" />

@@ -33,14 +33,12 @@ export function DailyChecklistPanel({
   syncingChecklistKey
 }: DailyChecklistPanelProps) {
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <Card className="space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle>Checklisten</CardTitle>
-            <CardDescription className="mt-2">
-              Große Targets, direktes Speichern und klare Tagesstruktur.
-            </CardDescription>
+            <CardDescription className="mt-1.5">Direkt abhaken und sauber durch den Tag gehen.</CardDescription>
           </div>
           {showMetricsShortcut && onShowMetrics ? (
             <Button variant="secondary" onClick={onShowMetrics} className="sm:w-auto xl:hidden">
@@ -67,10 +65,10 @@ export function DailyChecklistPanel({
             <div className="flex items-start justify-between gap-3">
               <div>
                 <CardTitle>{SECTION_LABELS[section] ?? section}</CardTitle>
-                <CardDescription className="mt-2">
+                <CardDescription className="mt-1.5">
                   {section === "meals"
-                    ? "Meals sauber abhaken, damit Tagesstruktur und Lean Bulk nicht wegrutschen."
-                    : "Schnelles Abhaken direkt auf dem iPhone."}
+                    ? "Meals sauber abhaken."
+                    : "Schnell abhaken."}
                 </CardDescription>
               </div>
               <div className="rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">

@@ -95,9 +95,14 @@ export function SupplementStack({ items }: SupplementsPageData) {
               Default-Supplements aus dem Seed sind schon da. Hier steuerst du aktiv, Dosis und Timing.
             </CardDescription>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Badge>{activeCount} aktiv</Badge>
-            <Button variant="secondary" onClick={saveSupplements} disabled={pending}>
+            <Button
+              variant="secondary"
+              onClick={saveSupplements}
+              disabled={pending}
+              className="w-full sm:w-auto"
+            >
               <Save className="mr-2 h-4 w-4" />
               Speichern
             </Button>
@@ -119,7 +124,7 @@ export function SupplementStack({ items }: SupplementsPageData) {
                   {supplement.guidance || "Keine zusätzlichen Hinweise hinterlegt."}
                 </CardDescription>
               </div>
-              <div className="w-full md:w-72">
+              <div className="w-full md:w-72 md:flex-shrink-0">
                 <Checkbox
                   checked={supplement.active}
                   onCheckedChange={(checked) =>

@@ -192,14 +192,14 @@ export function SettingsForm(data: SettingsPageData) {
   return (
     <div className="space-y-5">
       <Card className="space-y-4">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <CardTitle>Globale Settings</CardTitle>
             <CardDescription className="mt-2">
               Makro-Ziele, Trainingstage, Phase, Theme und aktive Standardsupplements.
             </CardDescription>
           </div>
-          <Button variant="secondary" onClick={saveSettings} disabled={pending}>
+          <Button variant="secondary" onClick={saveSettings} disabled={pending} className="w-full md:w-auto">
             <Save className="mr-2 h-4 w-4" />
             Speichern
           </Button>
@@ -309,7 +309,7 @@ export function SettingsForm(data: SettingsPageData) {
           <div className="flex items-center justify-between">
             <div>
               <CardTitle>Standardsupplements</CardTitle>
-              <CardDescription className="mt-2">
+              <CardDescription className="mt-1.5">
                 {activeSupplements} Standardsupplements aktuell aktiv.
               </CardDescription>
             </div>
