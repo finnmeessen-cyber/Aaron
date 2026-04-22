@@ -52,6 +52,7 @@ export type HevyImportResult = HevyImportSummary & {
 
 export type HevyApiSyncMode = "full" | "incremental";
 export type HevySyncTriggerSource = "manual" | "cron";
+export type HevyApiSyncStatus = "pending" | "success" | "failed";
 
 export type HevySyncResult = {
   dataImportId: string;
@@ -94,7 +95,11 @@ export type HevyApiImportMetadata = {
   parsed_rows: number;
   since: string | null;
   source: "api";
+  sync_completed_at: string | null;
+  sync_error: string | null;
+  sync_failed_at: string | null;
   sync_mode: HevyApiSyncMode;
+  sync_status: HevyApiSyncStatus;
   sync_started_at: string;
   trigger_source: HevySyncTriggerSource;
 };

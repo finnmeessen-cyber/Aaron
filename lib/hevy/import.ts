@@ -140,6 +140,20 @@ export function buildHevyProviderWorkoutId(groupKey: string) {
   return createHash("sha256").update(groupKey).digest("hex");
 }
 
+export function buildWallClockUtcIsoFromDateParts(
+  year: number,
+  monthIndex: number,
+  day: number,
+  hours: number,
+  minutes: number,
+  seconds: number,
+  milliseconds = 0
+) {
+  return new Date(
+    Date.UTC(year, monthIndex, day, hours, minutes, seconds, milliseconds)
+  ).toISOString();
+}
+
 function normalizeHeader(value: string) {
   return value
     .trim()
@@ -330,7 +344,7 @@ function buildWallClockTimestamp(parsedDate: Date): ParsedTimestamp {
   // parsed wall-clock date into UTC so grouping, duration, and workout_date remain stable
   // regardless of the server timezone.
   const stableUtcDate = new Date(
-    Date.UTC(
+    buildWallClockUtcIsoFromDateParts(
       parsedDate.getFullYear(),
       parsedDate.getMonth(),
       parsedDate.getDate(),

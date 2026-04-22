@@ -81,6 +81,14 @@ create table if not exists private.hevy_api_connections (
   updated_at timestamptz not null default timezone('utc', now())
 );
 
+create table if not exists private.hevy_sync_leases (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  lease_token uuid not null,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
 create table if not exists public.daily_entries (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
@@ -154,6 +162,9 @@ create index if not exists source_workouts_user_provider_started_at_idx
 
 create index if not exists source_workouts_user_workout_date_idx
   on public.source_workouts (user_id, workout_date desc);
+
+create index if not exists private_hevy_sync_leases_expires_at_idx
+  on private.hevy_sync_leases (expires_at);
 
 do $$
 begin
@@ -282,6 +293,12 @@ before update on private.hevy_api_connections
 for each row
 execute function public.set_updated_at();
 
+drop trigger if exists private_hevy_sync_leases_set_updated_at on private.hevy_sync_leases;
+create trigger private_hevy_sync_leases_set_updated_at
+before update on private.hevy_sync_leases
+for each row
+execute function public.set_updated_at();
+
 create or replace function public.hevy_has_api_key(target_user_id uuid)
 returns boolean
 language plpgsql
@@ -395,6 +412,59 @@ as $$
   order by connection.user_id;
 $$;
 
+create or replace function public.hevy_acquire_sync_lease(
+  target_user_id uuid,
+  requested_lease_token uuid,
+  lease_seconds integer default 1800
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  current_time timestamptz := timezone('utc', now());
+  effective_lease_seconds integer := greatest(coalesce(lease_seconds, 1800), 60);
+  affected_rows integer := 0;
+begin
+  delete from private.hevy_sync_leases
+  where expires_at <= current_time;
+
+  insert into private.hevy_sync_leases (
+    user_id,
+    lease_token,
+    expires_at
+  )
+  values (
+    target_user_id,
+    requested_lease_token,
+    current_time + make_interval(secs => effective_lease_seconds)
+  )
+  on conflict (user_id) do update
+    set lease_token = excluded.lease_token,
+        expires_at = excluded.expires_at,
+        updated_at = current_time
+  where private.hevy_sync_leases.expires_at <= current_time;
+
+  get diagnostics affected_rows = row_count;
+  return affected_rows > 0;
+end;
+$$;
+
+create or replace function public.hevy_release_sync_lease(
+  target_user_id uuid,
+  requested_lease_token uuid
+)
+returns void
+language sql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+  delete from private.hevy_sync_leases
+  where user_id = target_user_id
+    and lease_token = requested_lease_token;
+$$;
+
 drop trigger if exists user_settings_sync_phase_started_at on public.user_settings;
 create trigger user_settings_sync_phase_started_at
 before insert or update on public.user_settings
@@ -446,6 +516,7 @@ execute function public.set_updated_at();
 alter table public.profiles enable row level security;
 alter table public.user_settings enable row level security;
 alter table private.hevy_api_connections enable row level security;
+alter table private.hevy_sync_leases enable row level security;
 alter table public.daily_entries enable row level security;
 alter table public.checklist_templates enable row level security;
 alter table public.daily_checklists enable row level security;
@@ -569,6 +640,13 @@ drop policy if exists "data_imports_insert_own" on public.data_imports;
 create policy "data_imports_insert_own"
 on public.data_imports
 for insert
+with check (auth.uid() = user_id);
+
+drop policy if exists "data_imports_update_own" on public.data_imports;
+create policy "data_imports_update_own"
+on public.data_imports
+for update
+using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
 drop policy if exists "source_workouts_select_own" on public.source_workouts;
@@ -736,9 +814,13 @@ revoke all on function public.hevy_load_api_key(uuid) from public, anon, authent
 revoke all on function public.hevy_store_api_key(uuid, text) from public, anon, authenticated;
 revoke all on function public.hevy_delete_api_key(uuid) from public, anon, authenticated;
 revoke all on function public.hevy_list_connected_users() from public, anon, authenticated;
+revoke all on function public.hevy_acquire_sync_lease(uuid, uuid, integer) from public, anon, authenticated;
+revoke all on function public.hevy_release_sync_lease(uuid, uuid) from public, anon, authenticated;
 
 grant execute on function public.hevy_has_api_key(uuid) to service_role;
 grant execute on function public.hevy_load_api_key(uuid) to service_role;
 grant execute on function public.hevy_store_api_key(uuid, text) to service_role;
 grant execute on function public.hevy_delete_api_key(uuid) to service_role;
 grant execute on function public.hevy_list_connected_users() to service_role;
+grant execute on function public.hevy_acquire_sync_lease(uuid, uuid, integer) to service_role;
+grant execute on function public.hevy_release_sync_lease(uuid, uuid) to service_role;

@@ -6,6 +6,7 @@ import {
   type DataImportRow,
   type GroupedHevyWorkout,
   type HevyApiImportMetadata,
+  type HevyApiSyncStatus,
   type HevyCsvImportMetadata,
   type HevyImportResult,
   type HevySyncTriggerSource,
@@ -19,7 +20,7 @@ type DatabaseSupabase = Pick<ReturnType<typeof createServerSupabaseClient>, "fro
 type MutationError = { message: string } | null;
 type ExistingSourceWorkoutRow = Pick<
   TableRow<"source_workouts">,
-  "provider_workout_id" | "raw_payload" | "workout_date"
+  "id" | "provider_workout_id" | "raw_payload" | "workout_date"
 >;
 type MutationInsertOptions = {
   count?: "exact" | "planned" | "estimated";
@@ -51,8 +52,20 @@ type UpdateableDailyEntriesTable<Payload> = {
     };
   };
 };
+type ChainedUpdateTable<Payload> = {
+  update: (values: Payload) => {
+    eq: (column: string, value: string) => {
+      eq: (column: string, value: string) => Promise<{ error: MutationError }>;
+    };
+  };
+};
 
-function isJsonRecord(value: Json): value is Record<string, Json | undefined> {
+type PendingHevyApiImportContext = {
+  dataImportId: string;
+  metadata: HevyApiImportMetadata;
+};
+
+function isJsonRecord(value: unknown): value is Record<string, Json | undefined> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -63,6 +76,112 @@ function getGroupKeyFromRawPayload(rawPayload: Json) {
 
   const groupKey = rawPayload.group_key;
   return typeof groupKey === "string" && groupKey ? groupKey : null;
+}
+
+function getSourceKindFromRawPayload(rawPayload: Json) {
+  if (!isJsonRecord(rawPayload)) {
+    return null;
+  }
+
+  const sourceKind = rawPayload.source_kind;
+  return sourceKind === "api" || sourceKind === "csv" ? sourceKind : null;
+}
+
+function getSourceWorkoutIdFromRawPayload(rawPayload: Json) {
+  if (!isJsonRecord(rawPayload)) {
+    return null;
+  }
+
+  const sourceWorkout = rawPayload.source_workout;
+
+  if (!isJsonRecord(sourceWorkout)) {
+    return null;
+  }
+
+  const sourceWorkoutId = sourceWorkout.id;
+  return typeof sourceWorkoutId === "string" && sourceWorkoutId ? sourceWorkoutId : null;
+}
+
+function buildPendingHevyApiImportMetadata({
+  since,
+  syncMode,
+  syncStartedAt,
+  triggerSource
+}: {
+  since: string | null;
+  syncMode: "full" | "incremental";
+  syncStartedAt: string;
+  triggerSource: HevySyncTriggerSource;
+}): HevyApiImportMetadata {
+  return {
+    api_user_id: null,
+    api_user_name: null,
+    api_user_url: null,
+    deleted_events_ignored: 0,
+    fetched_workouts: 0,
+    grouped_workouts: 0,
+    parsed_rows: 0,
+    since,
+    source: "api",
+    sync_completed_at: null,
+    sync_error: null,
+    sync_failed_at: null,
+    sync_mode: syncMode,
+    sync_started_at: syncStartedAt,
+    sync_status: "pending",
+    trigger_source: triggerSource
+  };
+}
+
+function buildFinalizedHevyApiImportMetadata({
+  deletedEventsIgnored,
+  fetchedWorkouts,
+  groupedWorkouts,
+  parsedRows,
+  previousMetadata,
+  status,
+  syncCompletedAt,
+  syncError,
+  syncFailedAt,
+  userInfo
+}: {
+  deletedEventsIgnored: number;
+  fetchedWorkouts: number;
+  groupedWorkouts: number;
+  parsedRows: number;
+  previousMetadata: HevyApiImportMetadata;
+  status: HevyApiSyncStatus;
+  syncCompletedAt: string | null;
+  syncError: string | null;
+  syncFailedAt: string | null;
+  userInfo: {
+    id: string;
+    name: string;
+    url: string;
+  } | null;
+}): HevyApiImportMetadata {
+  return {
+    ...previousMetadata,
+    api_user_id: userInfo?.id ?? null,
+    api_user_name: userInfo?.name ?? null,
+    api_user_url: userInfo?.url ?? null,
+    deleted_events_ignored: deletedEventsIgnored,
+    fetched_workouts: fetchedWorkouts,
+    grouped_workouts: groupedWorkouts,
+    parsed_rows: parsedRows,
+    sync_completed_at: syncCompletedAt,
+    sync_error: syncError,
+    sync_failed_at: syncFailedAt,
+    sync_status: status
+  };
+}
+
+function sanitizeHevySyncError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message.slice(0, 240);
+  }
+
+  return "Hevy sync failed.";
 }
 
 function buildGroupedWorkoutPayload(
@@ -156,7 +275,7 @@ async function findExistingWorkoutsByGroupKey(
 
   const { data, error } = await supabase
     .from("source_workouts")
-    .select("provider_workout_id, raw_payload, workout_date")
+    .select("id, provider_workout_id, raw_payload, workout_date")
     .eq("user_id", userId)
     .eq("provider", HEVY_PROVIDER)
     .in("raw_payload->>group_key", groupKeys);
@@ -179,18 +298,18 @@ async function findExistingWorkoutsByGroupKey(
   return workoutMap;
 }
 
-async function getExistingProviderWorkoutIdSet(
+async function findExistingWorkoutsByProviderWorkoutId(
   supabase: DatabaseSupabase,
   userId: string,
   providerWorkoutIds: string[]
 ) {
   if (!providerWorkoutIds.length) {
-    return new Set<string>();
+    return new Map<string, ExistingSourceWorkoutRow>();
   }
 
   const { data, error } = await supabase
     .from("source_workouts")
-    .select("provider_workout_id")
+    .select("id, provider_workout_id, raw_payload, workout_date")
     .eq("user_id", userId)
     .eq("provider", HEVY_PROVIDER)
     .in("provider_workout_id", providerWorkoutIds);
@@ -199,8 +318,8 @@ async function getExistingProviderWorkoutIdSet(
     throw new HevyImportError(`Unable to load existing Hevy workouts: ${error.message}.`, 500);
   }
 
-  const rows = (data ?? []) as Array<{ provider_workout_id: string }>;
-  return new Set(rows.map((row) => row.provider_workout_id));
+  const rows = (data ?? []) as ExistingSourceWorkoutRow[];
+  return new Map(rows.map((row) => [row.provider_workout_id, row]));
 }
 
 async function resolveWorkoutsForPersistence(
@@ -220,7 +339,6 @@ async function resolveWorkoutsForPersistence(
     userId,
     Array.from(new Set(workouts.map((workout) => workout.groupKey)))
   );
-
   const normalizedWorkouts = workouts.map((workout) => {
     const existingWorkout = existingByGroupKey.get(workout.groupKey);
 
@@ -233,15 +351,106 @@ async function resolveWorkoutsForPersistence(
       providerWorkoutId: existingWorkout.provider_workout_id
     };
   });
-  const existingIdSet = await getExistingProviderWorkoutIdSet(
+  const existingByProviderWorkoutId = await findExistingWorkoutsByProviderWorkoutId(
     supabase,
     userId,
     Array.from(new Set(normalizedWorkouts.map((workout) => workout.providerWorkoutId)))
   );
+  const existingIdSet = new Set(existingByProviderWorkoutId.keys());
 
   return {
     existingIdSet,
     normalizedWorkouts
+  };
+}
+
+function canUpgradeBridgeMatchToApiIdentity(
+  existingWorkout: ExistingSourceWorkoutRow,
+  providerWorkoutId: string
+) {
+  const sourceKind = getSourceKindFromRawPayload(existingWorkout.raw_payload);
+
+  if (sourceKind === "csv") {
+    return true;
+  }
+
+  if (sourceKind !== "api") {
+    return false;
+  }
+
+  return getSourceWorkoutIdFromRawPayload(existingWorkout.raw_payload) === providerWorkoutId;
+}
+
+async function upgradeBridgeMatchedWorkoutToApiIdentity(
+  supabase: DatabaseSupabase,
+  userId: string,
+  existingWorkout: ExistingSourceWorkoutRow,
+  providerWorkoutId: string
+) {
+  const sourceWorkoutsUpdateTable = supabase.from(
+    "source_workouts"
+  ) as unknown as ChainedUpdateTable<{ provider_workout_id: string }>;
+  const { error } = await sourceWorkoutsUpdateTable
+    .update({
+      provider_workout_id: providerWorkoutId
+    })
+    .eq("id", existingWorkout.id)
+    .eq("user_id", userId);
+
+  if (error) {
+    throw new HevyImportError(`Unable to reconcile an existing Hevy workout: ${error.message}.`, 500);
+  }
+}
+
+async function resolveApiWorkoutsForPersistence(
+  supabase: DatabaseSupabase,
+  userId: string,
+  workouts: GroupedHevyWorkout[]
+) {
+  if (!workouts.length) {
+    return {
+      existingIdSet: new Set<string>(),
+      normalizedWorkouts: [] as GroupedHevyWorkout[]
+    };
+  }
+
+  const [existingByProviderWorkoutId, existingByGroupKey] = await Promise.all([
+    findExistingWorkoutsByProviderWorkoutId(
+      supabase,
+      userId,
+      Array.from(new Set(workouts.map((workout) => workout.providerWorkoutId)))
+    ),
+    findExistingWorkoutsByGroupKey(
+      supabase,
+      userId,
+      Array.from(new Set(workouts.map((workout) => workout.groupKey)))
+    )
+  ]);
+  const existingIdSet = new Set(existingByProviderWorkoutId.keys());
+
+  for (const workout of workouts) {
+    if (existingIdSet.has(workout.providerWorkoutId)) {
+      continue;
+    }
+
+    const bridgeMatch = existingByGroupKey.get(workout.groupKey);
+
+    if (!bridgeMatch || !canUpgradeBridgeMatchToApiIdentity(bridgeMatch, workout.providerWorkoutId)) {
+      continue;
+    }
+
+    await upgradeBridgeMatchedWorkoutToApiIdentity(
+      supabase,
+      userId,
+      bridgeMatch,
+      workout.providerWorkoutId
+    );
+    existingIdSet.add(workout.providerWorkoutId);
+  }
+
+  return {
+    existingIdSet,
+    normalizedWorkouts: workouts
   };
 }
 
@@ -288,7 +497,7 @@ async function upsertApiWorkouts(
   workouts: GroupedHevyWorkout[],
   userTimezone: string | null
 ) {
-  const { existingIdSet, normalizedWorkouts } = await resolveWorkoutsForPersistence(
+  const { existingIdSet, normalizedWorkouts } = await resolveApiWorkoutsForPersistence(
     supabase,
     userId,
     workouts
@@ -314,6 +523,25 @@ async function upsertApiWorkouts(
   return normalizedWorkouts.filter(
     (workout) => !existingIdSet.has(workout.providerWorkoutId)
   );
+}
+
+async function updateDataImportMetadata(
+  supabase: DatabaseSupabase,
+  userId: string,
+  dataImportId: string,
+  metadata: HevyApiImportMetadata
+) {
+  const dataImportsUpdateTable = supabase.from(
+    "data_imports"
+  ) as unknown as ChainedUpdateTable<{ metadata: HevyApiImportMetadata }>;
+  const { error } = await dataImportsUpdateTable
+    .update({ metadata })
+    .eq("id", dataImportId)
+    .eq("user_id", userId);
+
+  if (error) {
+    throw new HevyImportError(`Unable to update the Hevy import record: ${error.message}.`, 500);
+  }
 }
 
 async function upsertDailyEntries(
@@ -453,74 +681,131 @@ export async function persistHevyImport({
   };
 }
 
-export async function persistHevyApiSync({
-  deletedEventsIgnored,
-  fetchedWorkouts,
-  groupedWorkouts,
-  parsedRows,
-  since,
-  supabase,
-  syncMode,
-  syncStartedAt,
-  triggerSource,
-  userId,
-  userInfo,
-  userTimezone
-}: {
-  deletedEventsIgnored: number;
-  fetchedWorkouts: number;
-  groupedWorkouts: GroupedHevyWorkout[];
-  parsedRows: number;
-  since: string | null;
-  supabase: DatabaseSupabase;
-  syncMode: "full" | "incremental";
-  syncStartedAt: string;
-  triggerSource: HevySyncTriggerSource;
-  userId: string;
-  userInfo: {
-    id: string;
-    name: string;
-    url: string;
-  } | null;
-  userTimezone: string | null;
-}): Promise<HevySyncResult> {
-  const metadata: HevyApiImportMetadata = {
-    api_user_id: userInfo?.id ?? null,
-    api_user_name: userInfo?.name ?? null,
-    api_user_url: userInfo?.url ?? null,
-    deleted_events_ignored: deletedEventsIgnored,
-    fetched_workouts: fetchedWorkouts,
-    grouped_workouts: groupedWorkouts.length,
-    parsed_rows: parsedRows,
-    since,
-    source: "api",
-    sync_mode: syncMode,
-    sync_started_at: syncStartedAt,
-    trigger_source: triggerSource
-  };
-  const dataImport = await createDataImport(supabase, userId, metadata);
-  const insertedWorkouts = await upsertApiWorkouts(
+export const persistHevyApiSync = {
+  async completeFailure({
+    dataImportId,
+    error,
+    previousMetadata,
     supabase,
-    userId,
-    dataImport.id,
-    groupedWorkouts,
-    userTimezone
-  );
-  const updatedDailyEntries = await upsertDailyEntries(
-    supabase,
-    userId,
-    insertedWorkouts.map((workout) => workout.workoutDate)
-  );
+    userId
+  }: {
+    dataImportId: string;
+    error: unknown;
+    previousMetadata: HevyApiImportMetadata;
+    supabase: DatabaseSupabase;
+    userId: string;
+  }) {
+    const syncFailedAt = new Date().toISOString();
+    const metadata = buildFinalizedHevyApiImportMetadata({
+      deletedEventsIgnored: 0,
+      fetchedWorkouts: 0,
+      groupedWorkouts: 0,
+      parsedRows: 0,
+      previousMetadata,
+      status: "failed",
+      syncCompletedAt: null,
+      syncError: sanitizeHevySyncError(error),
+      syncFailedAt,
+      userInfo: null
+    });
 
-  return {
-    dataImportId: dataImport.id,
+    await updateDataImportMetadata(supabase, userId, dataImportId, metadata);
+  },
+
+  async completeSuccess({
+    dataImportId,
     deletedEventsIgnored,
     fetchedWorkouts,
-    insertedWorkouts: insertedWorkouts.length,
-    operation: "api_sync",
+    groupedWorkouts,
+    parsedRows,
+    previousMetadata,
+    supabase,
+    userId,
+    userInfo,
+    userTimezone
+  }: {
+    dataImportId: string;
+    deletedEventsIgnored: number;
+    fetchedWorkouts: number;
+    groupedWorkouts: GroupedHevyWorkout[];
+    parsedRows: number;
+    previousMetadata: HevyApiImportMetadata;
+    supabase: DatabaseSupabase;
+    userId: string;
+    userInfo: {
+      id: string;
+      name: string;
+      url: string;
+    } | null;
+    userTimezone: string | null;
+  }): Promise<HevySyncResult> {
+    const insertedWorkouts = await upsertApiWorkouts(
+      supabase,
+      userId,
+      dataImportId,
+      groupedWorkouts,
+      userTimezone
+    );
+    const updatedDailyEntries = await upsertDailyEntries(
+      supabase,
+      userId,
+      insertedWorkouts.map((workout) => workout.workoutDate)
+    );
+    const syncCompletedAt = new Date().toISOString();
+    const metadata = buildFinalizedHevyApiImportMetadata({
+      deletedEventsIgnored,
+      fetchedWorkouts,
+      groupedWorkouts: groupedWorkouts.length,
+      parsedRows,
+      previousMetadata,
+      status: "success",
+      syncCompletedAt,
+      syncError: null,
+      syncFailedAt: null,
+      userInfo
+    });
+
+    await updateDataImportMetadata(supabase, userId, dataImportId, metadata);
+
+    return {
+      dataImportId,
+      deletedEventsIgnored,
+      fetchedWorkouts,
+      insertedWorkouts: insertedWorkouts.length,
+      operation: "api_sync",
+      since: previousMetadata.since,
+      syncMode: previousMetadata.sync_mode,
+      triggerSource: previousMetadata.trigger_source,
+      updatedDailyEntries
+    };
+  },
+
+  async createPendingImport({
     since,
+    supabase,
     syncMode,
+    syncStartedAt,
     triggerSource,
-    updatedDailyEntries
-  };
-}
+    userId
+  }: {
+    since: string | null;
+    supabase: DatabaseSupabase;
+    syncMode: "full" | "incremental";
+    syncStartedAt: string;
+    triggerSource: HevySyncTriggerSource;
+    userId: string;
+  }): Promise<PendingHevyApiImportContext> {
+    const metadata = buildPendingHevyApiImportMetadata({
+      since,
+      syncMode,
+      syncStartedAt,
+      triggerSource
+    });
+    const dataImport = await createDataImport(supabase, userId, metadata);
+
+    return {
+      dataImportId: dataImport.id,
+      metadata
+    };
+  }
+};
