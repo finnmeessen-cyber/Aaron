@@ -9,5 +9,5 @@ export function ShellContainer({
   className?: string;
   children: ReactNode;
 }) {
-  return <div className={cn("mx-auto w-full max-w-6xl px-4 md:px-6", className)}>{children}</div>;
+  return <div className={cn("w-full", className)}>{children}</div>;
 }

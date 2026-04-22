@@ -683,7 +683,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
             <CardTitle>Jetzt loggen</CardTitle>
             <CardDescription className="mt-1">Werte und Checklisten.</CardDescription>
           </div>
-          <div className="grid gap-3 sm:grid-cols-[1fr_1fr_1.2fr]">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)]">
             <Button
               variant={selectedDate === todayDate ? "primary" : "secondary"}
               onClick={() => navigateToDate(todayDate)}
@@ -696,11 +696,14 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
             >
               Gestern
             </Button>
-            <Input
-              type="date"
-              value={selectedDate}
-              onChange={(event) => navigateToDate(event.target.value)}
-            />
+            <div className="min-w-0">
+              <Input
+                className="min-w-0 max-w-full"
+                type="date"
+                value={selectedDate}
+                onChange={(event) => navigateToDate(event.target.value)}
+              />
+            </div>
           </div>
         </div>
 

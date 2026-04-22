@@ -69,15 +69,13 @@ export default function RootLayout({
   return (
     <html lang="de" suppressHydrationWarning>
       <body
-        className={`${sora.variable} ${plexMono.variable} min-h-screen bg-background font-sans text-foreground antialiased`}
+        className={`${sora.variable} ${plexMono.variable} min-h-screen w-full overflow-x-hidden bg-background font-sans text-foreground antialiased`}
       >
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
           <SupabaseAuthListener />
           <PwaRegistrar />
           <OfflineBanner />
-          <div className="mx-auto w-full max-w-screen-2xl px-4 py-6 md:px-6 md:py-8">
-            {children}
-          </div>
+          {children}
         </ThemeProvider>
       </body>
     </html>
