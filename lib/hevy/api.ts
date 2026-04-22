@@ -128,6 +128,286 @@ function logUnexpectedPaginatedResponseShape(path: string, key: string, payload:
   });
 }
 
+function logUnexpectedWorkoutEventsResponseShape(path: string, payload: unknown) {
+  const topLevelPayload = isRecord(payload) ? payload : null;
+  const dataPayload = topLevelPayload?.data;
+  const nestedDataPayload = isRecord(dataPayload) ? dataPayload : null;
+  const topLevelEvents = topLevelPayload?.events;
+  const nestedEvents = nestedDataPayload?.events;
+
+  console.warn("Unexpected Hevy workout events response shape", {
+    dataKeys: toObjectKeys(nestedDataPayload),
+    dataType:
+      dataPayload === null ? "null" : Array.isArray(dataPayload) ? "array" : typeof dataPayload,
+    eventCollectionType:
+      topLevelEvents === null ? "null" : Array.isArray(topLevelEvents) ? "array" : typeof topLevelEvents,
+    nestedEventCollectionType:
+      nestedEvents === null ? "null" : Array.isArray(nestedEvents) ? "array" : typeof nestedEvents,
+    path,
+    topLevelKeys: toObjectKeys(topLevelPayload)
+  });
+}
+
+function describeCollectionValueType(value: unknown) {
+  if (value === null) {
+    return "null";
+  }
+
+  if (Array.isArray(value)) {
+    return "array";
+  }
+
+  return typeof value;
+}
+
+function extractResponseErrorMessage(payload: unknown): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  if (isString(payload.error) && payload.error.trim()) {
+    return payload.error.trim();
+  }
+
+  if (isString(payload.message) && payload.message.trim()) {
+    return payload.message.trim();
+  }
+
+  if (isRecord(payload.data)) {
+    return extractResponseErrorMessage(payload.data);
+  }
+
+  return null;
+}
+
+function summarizeWorkoutEventsResponseShape(path: string, payload: unknown) {
+  const topLevelPayload = isRecord(payload) ? payload : null;
+  const dataPayload = topLevelPayload?.data;
+  const nestedDataPayload = isRecord(dataPayload) ? dataPayload : null;
+  const topLevelEvents = topLevelPayload?.events;
+  const nestedEvents = nestedDataPayload?.events;
+
+  return {
+    dataKeys: toObjectKeys(nestedDataPayload),
+    dataType: describeCollectionValueType(dataPayload),
+    endpoint: path,
+    eventCollectionKeys: isRecord(topLevelEvents) ? toObjectKeys(topLevelEvents) : [],
+    eventCollectionType: describeCollectionValueType(topLevelEvents),
+    nestedEventCollectionKeys: isRecord(nestedEvents) ? toObjectKeys(nestedEvents) : [],
+    nestedEventCollectionType: describeCollectionValueType(nestedEvents),
+    topLevelKeys: toObjectKeys(topLevelPayload)
+  };
+}
+
+function logWorkoutEventsResponseShape(path: string, payload: unknown, shapeVariant: string) {
+  console.info("Hevy workout events response shape", {
+    ...summarizeWorkoutEventsResponseShape(path, payload),
+    shapeVariant
+  });
+}
+
+function resolvePaginatedPageMetadata(
+  payload: Record<string, unknown> | null,
+  dataPayload: Record<string, unknown> | null,
+  extraPayloads: Array<Record<string, unknown> | null> = []
+) {
+  const pagePayloads = [payload, dataPayload, ...extraPayloads].filter(
+    (candidate): candidate is Record<string, unknown> => Boolean(candidate)
+  );
+  let page = 1;
+  let pageCount: number | null = null;
+
+  for (const candidate of pagePayloads) {
+    if (page === 1 && isFiniteNumber(candidate.page)) {
+      page = candidate.page;
+    }
+
+    if (pageCount === null && isFiniteNumber(candidate.page_count)) {
+      pageCount = candidate.page_count;
+      continue;
+    }
+
+    if (pageCount === null && isFiniteNumber(candidate.pageCount)) {
+      pageCount = candidate.pageCount;
+    }
+  }
+
+  return { page, pageCount: pageCount ?? page };
+}
+
+function extractEventItemsFromValue(
+  value: unknown
+): { items: unknown[]; shapeVariant: string } | null {
+  if (Array.isArray(value)) {
+    return {
+      items: value,
+      shapeVariant: "array"
+    };
+  }
+
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  if (Array.isArray(value.events)) {
+    return {
+      items: value.events,
+      shapeVariant: "events_array"
+    };
+  }
+
+  if (Array.isArray(value.data)) {
+    return {
+      items: value.data,
+      shapeVariant: "data_array"
+    };
+  }
+
+  if (Array.isArray(value.items)) {
+    return {
+      items: value.items,
+      shapeVariant: "items_array"
+    };
+  }
+
+  return null;
+}
+
+function extractWorkoutEventsPage(payload: unknown, path: string, pageNumber: number) {
+  const logShape = (shapeVariant: string) => {
+    if (pageNumber === 1) {
+      logWorkoutEventsResponseShape(path, payload, shapeVariant);
+    }
+  };
+
+  if (payload === null) {
+    logShape("null_payload_empty");
+    return {
+      items: [] as unknown[],
+      page: 1,
+      pageCount: 1
+    };
+  }
+
+  if (Array.isArray(payload)) {
+    logShape("top_level_array");
+    return {
+      items: payload,
+      page: 1,
+      pageCount: 1
+    };
+  }
+
+  if (!isRecord(payload)) {
+    logUnexpectedWorkoutEventsResponseShape(path, payload);
+    throw new HevyApiError("Hevy API returned an unexpected events response shape.", 502);
+  }
+
+  const dataPayload = payload.data;
+  const dataObject = isRecord(dataPayload) ? dataPayload : null;
+  const topLevelEventsObject = isRecord(payload.events) ? payload.events : null;
+  const nestedEventsObject = dataObject && isRecord(dataObject.events) ? dataObject.events : null;
+  const topLevelWorkouts = Array.isArray(payload.workouts) ? payload.workouts : null;
+  const nestedWorkouts =
+    dataObject && Array.isArray(dataObject.workouts) ? dataObject.workouts : null;
+  const { page, pageCount } = resolvePaginatedPageMetadata(payload, dataObject, [
+    topLevelEventsObject,
+    nestedEventsObject
+  ]);
+
+  const responseErrorMessage = extractResponseErrorMessage(payload);
+
+  if (
+    responseErrorMessage &&
+    payload.events === undefined &&
+    (!dataObject || dataObject.events === undefined)
+  ) {
+    throw new HevyApiError(responseErrorMessage, 502);
+  }
+
+  const topLevelEventsItems = extractEventItemsFromValue(payload.events);
+
+  if (topLevelEventsItems) {
+    logShape(`top_level_${topLevelEventsItems.shapeVariant}`);
+    return {
+      items: topLevelEventsItems.items,
+      page,
+      pageCount
+    };
+  }
+
+  const nestedEventsItems = dataObject ? extractEventItemsFromValue(dataObject.events) : null;
+
+  if (nestedEventsItems) {
+    logShape(`data_wrapped_${nestedEventsItems.shapeVariant}`);
+    return {
+      items: nestedEventsItems.items,
+      page,
+      pageCount
+    };
+  }
+
+  const topLevelDataItems = extractEventItemsFromValue(dataPayload);
+
+  if (topLevelDataItems) {
+    logShape(`data_payload_${topLevelDataItems.shapeVariant}`);
+    return {
+      items: topLevelDataItems.items,
+      page,
+      pageCount
+    };
+  }
+
+  const isExplicitEmptyCollection =
+    payload.events === null ||
+    dataPayload === null ||
+    (topLevelWorkouts !== null &&
+      payload.events === undefined &&
+      topLevelWorkouts.length === 0) ||
+    (nestedWorkouts !== null &&
+      dataObject !== null &&
+      dataObject.events === undefined &&
+      nestedWorkouts.length === 0) ||
+    (dataObject !== null &&
+      (dataObject.events === null ||
+        (isRecord(dataObject.events) &&
+          (dataObject.events.data === null || dataObject.events.items === null)))) ||
+    (isRecord(payload.events) &&
+      (payload.events.data === null || payload.events.items === null));
+
+  if (isExplicitEmptyCollection) {
+    if (topLevelWorkouts !== null && payload.events === undefined) {
+      logShape("top_level_workouts_empty_array");
+    } else if (
+      nestedWorkouts !== null &&
+      dataObject !== null &&
+      dataObject.events === undefined
+    ) {
+      logShape("data_wrapped_workouts_empty_array");
+    } else {
+      logShape("explicit_empty_collection");
+    }
+    return {
+      items: [] as unknown[],
+      page,
+      pageCount
+    };
+  }
+
+  logUnexpectedWorkoutEventsResponseShape(path, payload);
+  throw new HevyApiError("Hevy API returned an unexpected events response shape.", 502);
+}
+
+function normalizeHevySinceCursor(since: string) {
+  const parsedDate = new Date(since);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return since;
+  }
+
+  return parsedDate.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
 function extractPaginatedCollection<TItem, TKey extends string>(
   payload: unknown,
   key: TKey,
@@ -419,12 +699,31 @@ export async function listAllHevyWorkouts(apiKey: string) {
 }
 
 export async function listHevyWorkoutEventsSince(apiKey: string, since: string) {
-  const events = await fetchPaginatedCollection<unknown, "events">(
-    "/v1/workouts/events",
-    "events",
-    apiKey,
-    { since }
-  );
+  const events: unknown[] = [];
+  let page = 1;
+  let pageCount = 1;
+  const normalizedSince = normalizeHevySinceCursor(since);
+
+  do {
+    const response = await hevyRequest<HevyApiPaginatedResponse<unknown, "events">>(
+      "/v1/workouts/events",
+      apiKey,
+      {
+        page: String(page),
+        pageSize: String(HEVY_MAX_PAGE_SIZE),
+        since: normalizedSince
+      }
+    );
+    const normalizedResponse = extractWorkoutEventsPage(
+      response,
+      "/v1/workouts/events",
+      page
+    );
+
+    events.push(...normalizedResponse.items);
+    pageCount = normalizedResponse.pageCount;
+    page += 1;
+  } while (page <= pageCount);
 
   return events
     .map(parseHevyWorkoutEvent)

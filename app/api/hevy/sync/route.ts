@@ -12,6 +12,7 @@ import {
 import { hasSupabaseServiceEnv } from "@/lib/supabase/env";
 
 export const runtime = "nodejs";
+
 const HEVY_API_KEY_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -25,7 +26,10 @@ function toErrorResponse(error: unknown) {
   }
 
   console.error("Unexpected Hevy sync error", error);
-  return NextResponse.json({ error: "Unable to sync the Hevy account." }, { status: 500 });
+  return NextResponse.json(
+    { error: "Unable to sync the Hevy account." },
+    { status: 500 }
+  );
 }
 
 function normalizeApiKey(value: unknown) {
@@ -43,7 +47,10 @@ function validateProvidedApiKey(apiKey: string | null) {
   }
 
   if (!HEVY_API_KEY_PATTERN.test(apiKey)) {
-    throw new HevyImportError("The Hevy API key must be a valid UUID.", 400);
+    throw new HevyImportError(
+      "The Hevy API key must be a valid UUID.",
+      400
+    );
   }
 
   return apiKey;
@@ -58,26 +65,37 @@ async function authenticateUser() {
   }
 
   const supabase = createServerSupabaseClient();
+
   const {
     data: { user },
     error
   } = await supabase.auth.getUser();
 
   if (error) {
-    throw new HevyImportError(`Unable to verify the current user: ${error.message}.`, 401);
+    throw new HevyImportError(
+      `Unable to verify the current user: ${error.message}.`,
+      401
+    );
   }
 
   if (!user) {
-    throw new HevyImportError("You must be signed in to sync Hevy.", 401);
+    throw new HevyImportError(
+      "You must be signed in to sync Hevy.",
+      401
+    );
   }
 
   return { supabase, user };
 }
 
+/**
+ * GET → Sync Status
+ */
 export async function GET() {
   try {
     const { supabase, user } = await authenticateUser();
     const adminSupabase = createAdminSupabaseClient();
+
     const status = await getHevySyncStatus({
       adminSupabase,
       supabase,
@@ -90,12 +108,20 @@ export async function GET() {
   }
 }
 
+/**
+ * POST → Manual Sync
+ */
 export async function POST(request: Request) {
   try {
     const { supabase, user } = await authenticateUser();
     const adminSupabase = createAdminSupabaseClient();
+
     const requestBody = (await request.json().catch(() => ({}))) as SyncRequestBody;
-    const providedApiKey = validateProvidedApiKey(normalizeApiKey(requestBody.apiKey));
+
+    const providedApiKey = validateProvidedApiKey(
+      normalizeApiKey(requestBody.apiKey)
+    );
+
     const result = await runManualHevySync({
       adminSupabase,
       providedApiKey,
@@ -109,6 +135,9 @@ export async function POST(request: Request) {
   }
 }
 
+/**
+ * DELETE → Remove API Key
+ */
 export async function DELETE() {
   try {
     const { user } = await authenticateUser();
