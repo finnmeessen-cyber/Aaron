@@ -1,3 +1,30 @@
+.env.*.local.DS_Store
+.next
+.next/cache
+node_modules
+dist
+coverage
+*.log
+
+# env
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+.env.test
+
+# vercel
+.vercel
+
+# build artifacts
+*.tsbuildinfo
+
+# review snapshots
+review/
+
+# editor
+*.swp
 .DS_Store
 .next
 node_modules
