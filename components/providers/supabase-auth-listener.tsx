@@ -1,13 +1,52 @@
 "use client";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef } from "react";
+import { usePathname, useRouter } from "next/navigation";
 
-import { createClientSupabaseClient } from "@/lib/supabase/client";
+import {
+  createClientSupabaseClient,
+  getLatestAppDataMutationTimestamp,
+  subscribeToAppDataMutations
+} from "@/lib/supabase/client";
 import { hasSupabaseEnv } from "@/lib/supabase/env";
+
+function isSafeLiveRefreshPath(pathname: string) {
+  return (
+    pathname.startsWith("/dashboard") ||
+    pathname.startsWith("/weekly-review") ||
+    pathname.startsWith("/review")
+  );
+}
 
 export function SupabaseAuthListener() {
   const router = useRouter();
+  const pathname = usePathname();
+  const handledMutationTimestampRef = useRef(0);
+
+  const maybeRefreshForDataMutation = useCallback(
+    (reason: "navigation" | "focus" | "external") => {
+      const latestMutationTimestamp = getLatestAppDataMutationTimestamp();
+
+      if (
+        latestMutationTimestamp <= handledMutationTimestampRef.current ||
+        latestMutationTimestamp === 0
+      ) {
+        return;
+      }
+
+      if (reason === "external" && !isSafeLiveRefreshPath(pathname)) {
+        return;
+      }
+
+      if (reason === "focus" && !isSafeLiveRefreshPath(pathname)) {
+        return;
+      }
+
+      handledMutationTimestampRef.current = latestMutationTimestamp;
+      router.refresh();
+    },
+    [pathname, router]
+  );
 
   useEffect(() => {
     if (!hasSupabaseEnv()) {
@@ -23,6 +62,35 @@ export function SupabaseAuthListener() {
 
     return () => subscription.unsubscribe();
   }, [router]);
+
+  useEffect(() => {
+    return subscribeToAppDataMutations(() => {
+      maybeRefreshForDataMutation("external");
+    });
+  }, [maybeRefreshForDataMutation]);
+
+  useEffect(() => {
+    maybeRefreshForDataMutation("navigation");
+  }, [maybeRefreshForDataMutation, pathname]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      maybeRefreshForDataMutation("focus");
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        maybeRefreshForDataMutation("focus");
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [maybeRefreshForDataMutation]);
 
   return null;
 }

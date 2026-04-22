@@ -62,6 +62,7 @@ export default async function DashboardPage() {
               <div className="mt-4 flex flex-wrap gap-3">
                 <Link
                   href="/daily"
+                  prefetch={false}
                   className="inline-flex min-h-11 items-center justify-center rounded-2xl bg-primary px-5 text-sm font-medium text-primary-foreground transition hover:opacity-95"
                 >
                   Daily
@@ -69,12 +70,14 @@ export default async function DashboardPage() {
                 </Link>
                 <Link
                   href={"/weekly-review" as Route}
+                  prefetch={false}
                   className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-zinc-200 bg-card px-5 text-sm font-medium transition hover:bg-muted dark:border-border/70 dark:bg-card"
                 >
                   Weekly
                 </Link>
                 <Link
                   href="/supplements"
+                  prefetch={false}
                   className="inline-flex min-h-11 items-center justify-center rounded-2xl border border-zinc-200 bg-card px-5 text-sm font-medium transition hover:bg-muted dark:border-border/70 dark:bg-card"
                 >
                   Stack
@@ -148,6 +151,7 @@ export default async function DashboardPage() {
               <Link
                 key={action.title}
                 href={action.href}
+                prefetch={false}
                 className={cn(
                   "block rounded-2xl border p-4 shadow-sm transition",
                   index === 0

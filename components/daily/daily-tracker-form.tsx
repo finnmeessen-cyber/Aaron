@@ -23,6 +23,7 @@ import {
 } from "@/lib/mutations";
 import {
   getAuthenticatedClientContext,
+  notifyAppDataMutation,
   getOfflineMessage,
   isBrowserOffline
 } from "@/lib/supabase/client";
@@ -295,6 +296,10 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
       });
 
       setStatus(resolveDailySaveStatus(mutationResult));
+
+      if (mutationResult.status !== "failed") {
+        notifyAppDataMutation();
+      }
     } catch {
       setStatus({
         tone: "danger",
@@ -374,6 +379,10 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         }
 
         setStatus(resolveChecklistSaveStatus(mutationResult));
+
+        if (mutationResult.status !== "failed") {
+          notifyAppDataMutation();
+        }
       } catch {
         if (!isLatestChecklistRequest(templateKey, requestVersion)) {
           return;

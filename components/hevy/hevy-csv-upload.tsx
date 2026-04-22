@@ -14,6 +14,7 @@ import type {
   HevySyncStatus
 } from "@/lib/hevy/types";
 import {
+  notifyAppDataMutation,
   getOfflineMessage,
   isBrowserOffline
 } from "@/lib/supabase/client";
@@ -178,6 +179,7 @@ export function HevyCsvUpload({
 
       const importResult = payload as HevyOperationResult;
       setResult(importResult);
+      notifyAppDataMutation();
       onCompleted?.();
       setStatus({
         tone:
@@ -233,6 +235,7 @@ export function HevyCsvUpload({
       const syncResult = payload as HevyOperationResult;
       setApiKey("");
       setResult(syncResult);
+      notifyAppDataMutation();
       onCompleted?.();
       setStatus({
         tone: "success",

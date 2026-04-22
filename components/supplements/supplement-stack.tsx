@@ -7,6 +7,7 @@ import type { SupplementsPageData } from "@/lib/data";
 import { saveSupplementsMutation } from "@/lib/mutations";
 import {
   getAuthenticatedClientContext,
+  notifyAppDataMutation,
   getOfflineMessage,
   isBrowserOffline
 } from "@/lib/supabase/client";
@@ -73,6 +74,7 @@ export function SupplementStack({ items }: SupplementsPageData) {
       }
 
       setStatus({ tone: "success", message: "Supplement-Stack gespeichert." });
+      notifyAppDataMutation();
     } catch {
       setStatus({
         tone: "danger",

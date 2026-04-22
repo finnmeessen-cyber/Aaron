@@ -12,6 +12,27 @@ function buildStorageKey(date: string) {
   return `${STORAGE_KEY_PREFIX}:${date}`;
 }
 
+function readStoredCheckedIds(date: string) {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  const storedValue = window.localStorage.getItem(buildStorageKey(date));
+
+  if (!storedValue) {
+    return [];
+  }
+
+  try {
+    const parsedValue = JSON.parse(storedValue) as unknown;
+    return Array.isArray(parsedValue)
+      ? parsedValue.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function TodoRow({
   checked,
   item,
@@ -68,12 +89,33 @@ export function DailyTodoList({
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
 
   useEffect(() => {
+    setCheckedIds(readStoredCheckedIds(selectedDate));
+  }, [selectedDate]);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
 
-    const storedValue = window.localStorage.getItem(buildStorageKey(selectedDate));
-    setCheckedIds(storedValue ? (JSON.parse(storedValue) as string[]) : []);
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== buildStorageKey(selectedDate)) {
+        return;
+      }
+
+      setCheckedIds(readStoredCheckedIds(selectedDate));
+    };
+
+    const handleFocus = () => {
+      setCheckedIds(readStoredCheckedIds(selectedDate));
+    };
+
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("focus", handleFocus);
+    };
   }, [selectedDate]);
 
   const tasks = useMemo(

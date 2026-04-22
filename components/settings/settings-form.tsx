@@ -10,6 +10,7 @@ import type { SettingsPageData } from "@/lib/data";
 import { saveSettingsMutation } from "@/lib/mutations";
 import {
   getAuthenticatedClientContext,
+  notifyAppDataMutation,
   getOfflineMessage,
   isBrowserOffline
 } from "@/lib/supabase/client";
@@ -164,6 +165,7 @@ export function SettingsForm(data: SettingsPageData) {
 
       setTheme(state.dark_mode_preference);
       setStatus({ tone: "success", message: "Settings gespeichert." });
+      notifyAppDataMutation();
 
       if (phaseChanged) {
         router.refresh();

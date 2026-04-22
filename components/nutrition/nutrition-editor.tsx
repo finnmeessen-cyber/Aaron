@@ -8,6 +8,7 @@ import type { NutritionPageData } from "@/lib/data";
 import { saveMealTemplatesMutation } from "@/lib/mutations";
 import {
   getAuthenticatedClientContext,
+  notifyAppDataMutation,
   getOfflineMessage,
   isBrowserOffline
 } from "@/lib/supabase/client";
@@ -89,6 +90,7 @@ export function NutritionEditor({ mealTemplates, settings }: NutritionPageData) 
       }
 
       setStatus({ tone: "success", message: "Meal Templates gespeichert." });
+      notifyAppDataMutation();
       router.refresh();
     } catch {
       setStatus({

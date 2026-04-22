@@ -8,6 +8,7 @@ import type { PhasesPageData } from "@/lib/data";
 import { savePhaseMutation } from "@/lib/mutations";
 import {
   getAuthenticatedClientContext,
+  notifyAppDataMutation,
   getOfflineMessage,
   isBrowserOffline
 } from "@/lib/supabase/client";
@@ -67,6 +68,7 @@ export function PhaseSelector({ phases, currentPhaseSlug }: PhasesPageData) {
       }
 
       setStatus({ tone: "success", message: "Aktuelle Phase gespeichert." });
+      notifyAppDataMutation();
 
       if (phaseChanged) {
         router.refresh();

@@ -18,6 +18,7 @@ export function DesktopNav() {
           <Link
             key={item.href}
             href={item.href}
+            prefetch={false}
             className={cn(
               "inline-flex min-h-11 items-center gap-2 rounded-2xl px-4 text-sm transition",
               active ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted"
