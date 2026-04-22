@@ -24,8 +24,8 @@ type ErrorResponse = {
 
 type HevyCsvUploadProps = {
   title?: string;
-  description?: string;
-  hint?: string;
+  description?: string | null;
+  hint?: string | null;
   variant?: "default" | "compact";
   onImported?: (result: HevyImportResult) => void;
 };
@@ -152,7 +152,7 @@ export function HevyCsvUpload({
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="space-y-2">
             <CardTitle className={variant === "compact" ? "text-lg" : "text-xl"}>{title}</CardTitle>
-            <CardDescription>{description}</CardDescription>
+            {description ? <CardDescription>{description}</CardDescription> : null}
           </div>
           {variant === "default" ? (
             <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
@@ -176,9 +176,7 @@ export function HevyCsvUpload({
               className="file:mr-4 file:rounded-xl file:border-0 file:bg-muted file:px-3 file:py-2 file:text-sm file:font-medium file:text-foreground hover:file:bg-muted/80"
               onChange={handleFileChange}
             />
-            <p className="text-sm text-muted-foreground">
-              {hint}
-            </p>
+            {hint ? <p className="text-sm text-muted-foreground">{hint}</p> : null}
           </div>
 
           {file ? (

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { NAV_ITEMS } from "@/lib/constants";
+import { BOTTOM_NAV_ITEMS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 export function BottomNav() {
@@ -11,9 +11,11 @@ export function BottomNav() {
 
   return (
     <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-border/80 bg-background/90 px-2 pb-2 pt-2 backdrop-blur md:hidden">
-      <div className="mx-auto grid max-w-2xl grid-cols-4 gap-2">
-        {NAV_ITEMS.slice(0, 4).map((item) => {
-          const active = pathname.startsWith(item.href);
+      <div className="mx-auto grid max-w-2xl grid-cols-3 gap-2">
+        {BOTTOM_NAV_ITEMS.map((item) => {
+          const active =
+            pathname.startsWith(item.href) ||
+            (item.href === "/weekly-review" && pathname.startsWith("/review"));
           const Icon = item.icon;
           return (
             <Link

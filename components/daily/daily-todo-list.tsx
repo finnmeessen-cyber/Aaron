@@ -136,9 +136,9 @@ export function DailyTodoList({
   }
 
   return (
-    <section className="space-y-3">
+    <section className="space-y-2">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Heute</h2>
+        <h2 className="text-xl font-semibold tracking-tight">Heute</h2>
       </div>
       <div className="space-y-2">
         {sortedTasks.map((task) => (

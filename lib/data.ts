@@ -142,6 +142,28 @@ export type WeeklyReviewData = {
   }>;
 };
 
+export type ReviewPageData = {
+  currentWeekEnd: string;
+  currentWeekStart: string;
+  days: Array<{
+    calories: number | null;
+    cravings: number | null;
+    date: string;
+    energy: number | null;
+    sleep: number | null;
+    trainingCompleted: boolean;
+  }>;
+  summary: {
+    caloriesAverage: number | null;
+    caloriesLoggedDays: number;
+    cravingsAverage: number | null;
+    energyAverage: number | null;
+    sleepAverage: number | null;
+    trackedDays: number;
+    trainingDays: number;
+  };
+};
+
 export type SettingsPageData = {
   settings: UserSettings | null;
   phases: Phase[];
@@ -624,6 +646,61 @@ export async function getWeeklyReviewData(
       energyAverage
     }),
     chartSeries: toChartSeries(currentEntries)
+  };
+}
+
+export async function getReviewPageData(
+  supabase: TypedSupabase,
+  userId: string
+): Promise<ReviewPageData> {
+  const { data: profileTimezoneData } = await supabase
+    .from("profiles")
+    .select("timezone")
+    .eq("id", userId)
+    .maybeSingle();
+  const profileTimezoneRow = (profileTimezoneData ?? null) as Pick<Profile, "timezone"> | null;
+  const timezone = profileTimezoneRow?.timezone ?? "Europe/Berlin";
+
+  const today = toDateInputValue(new Date(), timezone);
+  const currentWeekStart = startOfWeekDateKey(today, 1);
+  const currentWeekEnd = endOfWeekDateKey(today, 1);
+
+  const { data: entries } = await supabase
+    .from("daily_entries")
+    .select("*")
+    .eq("user_id", userId)
+    .gte("entry_date", currentWeekStart)
+    .lte("entry_date", currentWeekEnd)
+    .order("entry_date", { ascending: true });
+
+  const entryRows: DailyEntry[] = entries ?? [];
+  const entryMap = new Map(entryRows.map((entry) => [entry.entry_date, entry]));
+  const weekDates = Array.from({ length: 7 }, (_, index) => shiftDateKey(currentWeekStart, index));
+
+  return {
+    currentWeekEnd,
+    currentWeekStart,
+    days: weekDates.map((date) => {
+      const entry = entryMap.get(date) ?? null;
+
+      return {
+        calories: entry?.calories ?? null,
+        cravings: entry?.cravings_score ?? null,
+        date,
+        energy: entry?.energy_score ?? null,
+        sleep: entry?.sleep_score ?? null,
+        trainingCompleted: entry?.training_completed ?? false
+      };
+    }),
+    summary: {
+      caloriesAverage: average(entryRows.map((entry) => entry.calories)),
+      caloriesLoggedDays: entryRows.filter((entry) => entry.calories !== null).length,
+      cravingsAverage: average(entryRows.map((entry) => entry.cravings_score)),
+      energyAverage: average(entryRows.map((entry) => entry.energy_score)),
+      sleepAverage: average(entryRows.map((entry) => entry.sleep_score)),
+      trackedDays: entryRows.length,
+      trainingDays: entryRows.filter((entry) => entry.training_completed).length
+    }
   };
 }
 

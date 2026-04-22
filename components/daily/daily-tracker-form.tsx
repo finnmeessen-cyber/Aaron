@@ -493,14 +493,12 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
   const previousDate = shiftDateKey(todayDate, -1);
 
   return (
-    <div className="space-y-5">
-      <Card className="space-y-5">
+    <div className="space-y-4">
+      <Card className="space-y-4">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <CardTitle>Jetzt loggen</CardTitle>
-            <CardDescription className="mt-2">
-              Mobile-first: erst Tagesdaten, dann Checklisten. Supplement-Logs laufen jetzt mit.
-            </CardDescription>
+            <CardDescription className="mt-1">Werte und Checklisten.</CardDescription>
           </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_1fr_1.2fr]">
             <Button
@@ -526,11 +524,11 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         <div className="grid gap-3 md:grid-cols-3">
           <Button variant="secondary" onClick={applyTemplate}>
             <ClipboardPaste className="mr-2 h-4 w-4" />
-            Heute aus Vorlage
+            Vorlage
           </Button>
           <Button variant="secondary" onClick={copyPreviousDay} disabled={loading}>
             <Copy className="mr-2 h-4 w-4" />
-            Vortag kopieren
+            Vortag
           </Button>
           <div className="grid grid-cols-2 gap-3 xl:hidden">
             <Button
@@ -558,12 +556,12 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         timezone={props.timezone}
       />
 
-      <CollapsibleSection title="Weitere Aktionen">
+      <CollapsibleSection title="Mehr">
         <HevyCsvUpload
           variant="compact"
-          title="Hevy CSV importieren"
-          description="Lade deinen Hevy-Export hoch, um Trainingstage automatisch zu markieren."
-          hint="Funktioniert auch rückwirkend für ältere Workouts aus deinem Export."
+          title="Hevy Import"
+          description={null}
+          hint={null}
           onImported={() => router.refresh()}
         />
       </CollapsibleSection>

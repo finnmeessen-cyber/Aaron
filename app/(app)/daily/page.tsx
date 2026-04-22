@@ -31,12 +31,12 @@ export default async function DailyPage({
   const data = await getDailyPageData(supabase, user.id, searchParams?.date);
 
   return (
-    <PageShell className="gap-6">
+    <PageShell className="gap-5">
       <PageHero>
         <PageHeader
           eyebrow="Daily Tracker"
           title={formatDisplayDate(data.selectedDate)}
-          description="Gewicht, Schlaf, Energie, Cravings, Training und komplette Checklisten in einer mobilen Erfassungsfläche."
+          description="Heute tracken."
         />
       </PageHero>
       <DailyTrackerForm {...data} />
