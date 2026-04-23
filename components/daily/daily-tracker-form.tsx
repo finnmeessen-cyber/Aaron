@@ -443,8 +443,24 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
     [supplementTodoTasks]
   );
 
-  function navigateToDate(date: string) {
+  async function navigateToDate(date: string) {
     if (!date) {
+      return;
+    }
+
+    if (date === activeEntryDate) {
+      setSelectedDate(date);
+      return;
+    }
+
+    const saved = await autosave.flush();
+
+    if (!saved) {
+      setStatus({
+        tone: "danger",
+        message: "Bitte speichere den aktuellen Tag zuerst, bevor du das Datum wechselst."
+      });
+      setSelectedDate(activeEntryDate);
       return;
     }
 
@@ -1093,14 +1109,18 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
             <Button
               className="w-full max-w-full"
               variant={selectedDate === todayDate ? "primary" : "secondary"}
-              onClick={() => navigateToDate(todayDate)}
+              onClick={() => {
+                void navigateToDate(todayDate);
+              }}
             >
               Heute
             </Button>
             <Button
               className="w-full max-w-full"
               variant={selectedDate === previousDate ? "primary" : "secondary"}
-              onClick={() => navigateToDate(previousDate)}
+              onClick={() => {
+                void navigateToDate(previousDate);
+              }}
             >
               Gestern
             </Button>
@@ -1109,7 +1129,9 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
                 className="min-w-0 w-full max-w-full"
                 type="date"
                 value={selectedDate}
-                onChange={(event) => navigateToDate(event.target.value)}
+                onChange={(event) => {
+                  void navigateToDate(event.target.value);
+                }}
               />
             </div>
           </div>
