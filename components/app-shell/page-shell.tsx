@@ -11,7 +11,9 @@ export function PageShell({
   children: ReactNode;
 }) {
   return (
-    <ShellContainer className={cn("flex flex-col gap-5 pt-4 pb-6 md:pt-5 md:pb-8", className)}>
+    <ShellContainer
+      className={cn("flex min-w-0 max-w-full flex-col gap-5 pt-4 pb-6 md:pt-5 md:pb-8", className)}
+    >
       {children}
     </ShellContainer>
   );

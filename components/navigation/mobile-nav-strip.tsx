@@ -10,8 +10,8 @@ export function MobileNavStrip() {
   const pathname = usePathname();
 
   return (
-    <div className="overflow-x-auto pb-3 md:hidden">
-      <div className="flex min-w-max gap-2">
+    <div className="min-w-0 max-w-full overflow-x-auto pb-3 md:hidden">
+      <div className="flex w-full gap-2">
         {NAV_ITEMS.map((item) => {
           const active = pathname.startsWith(item.href);
           return (
@@ -20,7 +20,7 @@ export function MobileNavStrip() {
               href={item.href}
               prefetch={false}
               className={cn(
-                "inline-flex min-h-10 items-center rounded-full px-4 text-sm font-medium transition",
+                "inline-flex min-h-10 shrink-0 items-center rounded-full px-4 text-sm font-medium transition",
                 active ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"
               )}
             >

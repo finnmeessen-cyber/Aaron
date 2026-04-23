@@ -22,9 +22,9 @@ export function AppShell({
     : currentPhaseLabel(shellData.currentPhase);
 
   return (
-    <div className="app-shell min-h-screen">
+    <div className="app-shell min-h-screen min-w-0 max-w-full">
       <header className="sticky top-0 z-30 border-b border-border/60 bg-background/90 backdrop-blur">
-        <ShellContainer className="flex flex-col">
+        <ShellContainer className="flex min-w-0 max-w-full flex-col">
           <div className="flex items-center justify-between gap-4 py-4">
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/15 text-primary shadow-soft">
@@ -47,7 +47,7 @@ export function AppShell({
           <MobileNavStrip />
         </ShellContainer>
       </header>
-      <main className="min-w-0">{children}</main>
+      <main className="min-w-0 max-w-full">{children}</main>
       <BottomNav />
     </div>
   );

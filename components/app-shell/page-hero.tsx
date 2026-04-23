@@ -13,7 +13,7 @@ export function PageHero({
   return (
     <Card
       className={cn(
-        "rounded-2xl border-zinc-200 bg-muted/70 p-5 shadow-sm dark:border-border/70 dark:bg-muted/40 md:p-6",
+        "min-w-0 max-w-full rounded-2xl border-zinc-200 bg-muted/70 p-5 shadow-sm dark:border-border/70 dark:bg-muted/40 md:p-6",
         className
       )}
     >

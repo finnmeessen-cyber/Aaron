@@ -61,7 +61,7 @@ function TodoRow({
       onClick={onToggle}
       disabled={pending}
       className={cn(
-        "grid w-full grid-cols-[4.25rem_1fr_2rem] items-center gap-3 rounded-2xl border border-border px-4 py-3 text-left transition hover:border-primary/40 hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-70",
+        "grid min-w-0 w-full max-w-full grid-cols-[4.25rem_minmax(0,1fr)_2rem] items-center gap-3 rounded-2xl border border-border px-4 py-3 text-left transition hover:border-primary/40 hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-70",
         checked && "border-primary/30 bg-primary/10"
       )}
       aria-pressed={checked}
@@ -71,7 +71,7 @@ function TodoRow({
       </span>
       <span
         className={cn(
-          "text-sm font-medium",
+          "min-w-0 text-sm font-medium",
           checked && "text-muted-foreground line-through decoration-muted-foreground/70"
         )}
       >
@@ -218,7 +218,7 @@ export function DailyTodoList({
   }
 
   return (
-    <section className="space-y-2">
+    <section className="min-w-0 max-w-full space-y-2">
       <div>
         <h2 className="text-xl font-semibold tracking-tight">Heute</h2>
       </div>
