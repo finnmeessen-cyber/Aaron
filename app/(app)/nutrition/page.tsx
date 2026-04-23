@@ -6,7 +6,13 @@ import { getNutritionPageData } from "@/lib/data";
 import { hasSupabaseEnv } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
-export default async function NutritionPage() {
+export default async function NutritionPage({
+  searchParams
+}: {
+  searchParams?: {
+    fatsecret?: string;
+  };
+}) {
   if (!hasSupabaseEnv()) {
     return <SetupRequired />;
   }
@@ -29,7 +35,14 @@ export default async function NutritionPage() {
         title="Meals & Macros"
         description="Editierbare Meal Templates für Trainingstag und Restday, ohne unnötigen Food-Tracking-Lärm."
       />
-      <NutritionEditor {...data} />
+      <NutritionEditor
+        {...data}
+        fatsecretFlashStatus={
+          searchParams?.fatsecret === "connected" || searchParams?.fatsecret === "error"
+            ? searchParams.fatsecret
+            : null
+        }
+      />
     </PageShell>
   );
 }

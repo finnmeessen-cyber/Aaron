@@ -186,6 +186,58 @@ function createInitialState(data: DailyPageData): FormState {
   };
 }
 
+function buildDailyNutritionMutationPayload({
+  currentCalories,
+  existingCalories,
+  existingNutritionSource
+}: {
+  currentCalories: number | null;
+  existingCalories: number | null;
+  existingNutritionSource: string | null;
+}) {
+  if (existingNutritionSource === "fatsecret") {
+    if (currentCalories === existingCalories) {
+      return {
+        calories: currentCalories,
+        nutrition_source: "fatsecret" as const
+      };
+    }
+
+    if (currentCalories === null) {
+      return {
+        calories: null,
+        carbs_g: null,
+        fat_g: null,
+        nutrition_source: null,
+        protein_g: null
+      };
+    }
+
+    return {
+      calories: currentCalories,
+      carbs_g: null,
+      fat_g: null,
+      nutrition_source: "manual" as const,
+      protein_g: null
+    };
+  }
+
+  if (currentCalories === null) {
+    return {
+      calories: null,
+      carbs_g: null,
+      fat_g: null,
+      nutrition_source: null,
+      protein_g: null
+    };
+  }
+
+  return {
+    calories: currentCalories,
+    nutrition_source: "manual" as const
+  };
+}
+
 export function DailyTrackerForm(props: DailyTrackerFormProps) {
   const router = useRouter();
   const checklistTemplates = props.checklistTemplates;
@@ -347,7 +399,6 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         checklistTemplates: props.checklistTemplates,
         entry: {
           body_weight: numberOrNull(form.body_weight),
-          calories: numberOrNull(form.calories),
           cravings_score: form.cravings_score,
           day_type: form.day_type,
           energy_score: form.energy_score,
@@ -355,7 +406,12 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
           notes: form.notes || null,
           sleep_score: form.sleep_score,
           training_completed: form.training_completed,
-          user_id: userId
+          user_id: userId,
+          ...buildDailyNutritionMutationPayload({
+            currentCalories: numberOrNull(form.calories),
+            existingCalories: props.entry?.calories ?? null,
+            existingNutritionSource: props.entry?.nutrition_source ?? null
+          })
         },
         entryDate: selectedDate,
         supplementLogMeta: props.supplementLogMeta,

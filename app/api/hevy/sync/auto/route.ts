@@ -11,6 +11,7 @@ import { getCronSecret, hasCronSecretEnv, hasSupabaseServiceEnv } from "@/lib/su
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+export const dynamic = "force-dynamic";
 
 const DEFAULT_AUTO_SYNC_LIMIT = 20;
 const MAX_AUTO_SYNC_LIMIT = 50;

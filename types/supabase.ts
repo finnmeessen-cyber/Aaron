@@ -96,13 +96,17 @@ export type Database = {
       daily_entries: {
         Row: {
           body_weight: number | null;
+          carbs_g: number | null;
           calories: number | null;
           created_at: string;
           cravings_score: number | null;
           energy_score: number | null;
           entry_date: string;
+          fat_g: number | null;
           id: string;
           notes: string | null;
+          nutrition_source: string | null;
+          protein_g: number | null;
           sleep_score: number | null;
           training_completed: boolean;
           training_source: string | null;
@@ -112,13 +116,17 @@ export type Database = {
         };
         Insert: {
           body_weight?: number | null;
+          carbs_g?: number | null;
           calories?: number | null;
           created_at?: string;
           cravings_score?: number | null;
           energy_score?: number | null;
           entry_date: string;
+          fat_g?: number | null;
           id?: string;
           notes?: string | null;
+          nutrition_source?: string | null;
+          protein_g?: number | null;
           sleep_score?: number | null;
           training_completed?: boolean;
           training_source?: string | null;
@@ -128,13 +136,17 @@ export type Database = {
         };
         Update: {
           body_weight?: number | null;
+          carbs_g?: number | null;
           calories?: number | null;
           created_at?: string;
           cravings_score?: number | null;
           energy_score?: number | null;
           entry_date?: string;
+          fat_g?: number | null;
           id?: string;
           notes?: string | null;
+          nutrition_source?: string | null;
+          protein_g?: number | null;
           sleep_score?: number | null;
           training_completed?: boolean;
           training_source?: string | null;
@@ -357,6 +369,56 @@ export type Database = {
           title?: string | null;
           user_id?: string;
           workout_date?: string;
+        };
+      };
+      source_nutrition_entries: {
+        Row: {
+          calories: number | null;
+          carbs_g: number | null;
+          created_at: string;
+          data_import_id: string | null;
+          entry_date: string;
+          fat_g: number | null;
+          food_name: string;
+          id: string;
+          meal_type: string;
+          protein_g: number | null;
+          provider: string;
+          provider_entry_id: string;
+          raw_payload: Json;
+          user_id: string;
+        };
+        Insert: {
+          calories?: number | null;
+          carbs_g?: number | null;
+          created_at?: string;
+          data_import_id?: string | null;
+          entry_date: string;
+          fat_g?: number | null;
+          food_name: string;
+          id?: string;
+          meal_type: string;
+          protein_g?: number | null;
+          provider?: string;
+          provider_entry_id: string;
+          raw_payload: Json;
+          user_id?: string;
+        };
+        Update: {
+          calories?: number | null;
+          carbs_g?: number | null;
+          created_at?: string;
+          data_import_id?: string | null;
+          entry_date?: string;
+          fat_g?: number | null;
+          food_name?: string;
+          id?: string;
+          meal_type?: string;
+          protein_g?: number | null;
+          provider?: string;
+          provider_entry_id?: string;
+          raw_payload?: Json;
+          user_id?: string;
         };
       };
       supplement_catalog: {

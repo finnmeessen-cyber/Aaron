@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Save } from "lucide-react";
 
+import { FatSecretSyncCard } from "@/components/nutrition/fatsecret-sync-card";
 import type { NutritionPageData } from "@/lib/data";
 import { saveMealTemplatesMutation } from "@/lib/mutations";
 import {
@@ -18,7 +19,14 @@ import { Input } from "@/components/ui/input";
 import { StatusMessage } from "@/components/ui/status-message";
 import { Textarea } from "@/components/ui/textarea";
 
-export function NutritionEditor({ mealTemplates, settings }: NutritionPageData) {
+export function NutritionEditor({
+  fatsecretDaily,
+  fatsecretFlashStatus = null,
+  mealTemplates,
+  settings
+}: NutritionPageData & {
+  fatsecretFlashStatus?: "connected" | "error" | null;
+}) {
   const router = useRouter();
   const [templates, setTemplates] = useState(mealTemplates);
   const [pending, setPending] = useState(false);
@@ -104,6 +112,8 @@ export function NutritionEditor({ mealTemplates, settings }: NutritionPageData) 
 
   return (
     <div className="space-y-5">
+      <FatSecretSyncCard daily={fatsecretDaily} flashStatus={fatsecretFlashStatus} />
+
       <Card className="space-y-4">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>

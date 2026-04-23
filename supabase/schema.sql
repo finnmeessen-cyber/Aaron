@@ -41,7 +41,7 @@ begin
     join pg_namespace n on n.oid = t.typnamespace
     where t.typname = 'provider_type' and n.nspname = 'public'
   ) then
-    create type public.provider_type as enum ('hevy');
+    create type public.provider_type as enum ('hevy', 'fatsecret');
   end if;
 exception
   when duplicate_object then null;
@@ -89,6 +89,22 @@ create table if not exists private.hevy_sync_leases (
   updated_at timestamptz not null default timezone('utc', now())
 );
 
+create table if not exists private.fatsecret_connections (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  vault_secret_id uuid not null,
+  last_synced_date date,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create table if not exists private.fatsecret_sync_leases (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  lease_token uuid not null,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
 create table if not exists public.daily_entries (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
@@ -99,7 +115,11 @@ create table if not exists public.daily_entries (
   cravings_score integer check (cravings_score between 1 and 10),
   training_completed boolean not null default false,
   training_source text,
-  calories integer check (calories >= 0),
+  calories numeric(10, 2) check (calories is null or calories >= 0),
+  protein_g numeric(10, 2) check (protein_g is null or protein_g >= 0),
+  carbs_g numeric(10, 2) check (carbs_g is null or carbs_g >= 0),
+  fat_g numeric(10, 2) check (fat_g is null or fat_g >= 0),
+  nutrition_source text check (nutrition_source in ('manual', 'fatsecret')),
   notes text,
   day_type text not null default 'training' check (day_type in ('training', 'rest')),
   created_at timestamptz not null default timezone('utc', now()),
@@ -151,6 +171,23 @@ create table if not exists public.source_workouts (
   created_at timestamptz not null default timezone('utc', now())
 );
 
+create table if not exists public.source_nutrition_entries (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  data_import_id uuid references public.data_imports (id) on delete set null,
+  provider public.provider_type not null default 'fatsecret',
+  provider_entry_id text not null,
+  entry_date date not null,
+  meal_type text not null,
+  food_name text not null,
+  calories numeric(10, 2) check (calories is null or calories >= 0),
+  protein_g numeric(10, 2) check (protein_g is null or protein_g >= 0),
+  carbs_g numeric(10, 2) check (carbs_g is null or carbs_g >= 0),
+  fat_g numeric(10, 2) check (fat_g is null or fat_g >= 0),
+  raw_payload jsonb not null,
+  created_at timestamptz not null default timezone('utc', now())
+);
+
 create index if not exists data_imports_user_provider_created_at_idx
   on public.data_imports (user_id, provider, created_at desc);
 
@@ -166,6 +203,15 @@ create index if not exists source_workouts_user_workout_date_idx
 create index if not exists private_hevy_sync_leases_expires_at_idx
   on private.hevy_sync_leases (expires_at);
 
+create index if not exists source_nutrition_entries_user_entry_date_idx
+  on public.source_nutrition_entries (user_id, entry_date desc);
+
+create index if not exists source_nutrition_entries_provider_entry_idx
+  on public.source_nutrition_entries (provider, provider_entry_id);
+
+create index if not exists private_fatsecret_sync_leases_expires_at_idx
+  on private.fatsecret_sync_leases (expires_at);
+
 do $$
 begin
   if not exists (
@@ -176,6 +222,20 @@ begin
     alter table public.source_workouts
       add constraint source_workouts_user_provider_workout_id_unique
       unique (user_id, provider, provider_workout_id);
+  end if;
+end;
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'source_nutrition_entries_user_provider_entry_id_unique'
+  ) then
+    alter table public.source_nutrition_entries
+      add constraint source_nutrition_entries_user_provider_entry_id_unique
+      unique (user_id, provider, provider_entry_id);
   end if;
 end;
 $$;
@@ -296,6 +356,18 @@ execute function public.set_updated_at();
 drop trigger if exists private_hevy_sync_leases_set_updated_at on private.hevy_sync_leases;
 create trigger private_hevy_sync_leases_set_updated_at
 before update on private.hevy_sync_leases
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists private_fatsecret_connections_set_updated_at on private.fatsecret_connections;
+create trigger private_fatsecret_connections_set_updated_at
+before update on private.fatsecret_connections
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists private_fatsecret_sync_leases_set_updated_at on private.fatsecret_sync_leases;
+create trigger private_fatsecret_sync_leases_set_updated_at
+before update on private.fatsecret_sync_leases
 for each row
 execute function public.set_updated_at();
 
@@ -492,6 +564,219 @@ as $$
     and lease_token = requested_lease_token;
 $$;
 
+create or replace function public.fatsecret_has_connection(target_user_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, private
+as $$
+begin
+  return exists (
+    select 1
+    from private.fatsecret_connections
+    where user_id = target_user_id
+  );
+end;
+$$;
+
+create or replace function public.fatsecret_load_connection(target_user_id uuid)
+returns jsonb
+language sql
+security definer
+set search_path = public, private, vault
+as $$
+  select jsonb_build_object(
+    'auth_secret', secret_payload.secret_json ->> 'auth_secret',
+    'auth_token', secret_payload.secret_json ->> 'auth_token',
+    'last_synced_date', connection.last_synced_date
+  )
+  from private.fatsecret_connections connection
+  join lateral (
+    select secret.decrypted_secret::jsonb as secret_json
+    from vault.decrypted_secrets secret
+    where secret.id = connection.vault_secret_id
+  ) secret_payload on true
+  where connection.user_id = target_user_id;
+$$;
+
+create or replace function public.fatsecret_store_connection(
+  target_user_id uuid,
+  new_credentials jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, private, vault
+as $$
+declare
+  existing_secret_id uuid;
+  next_secret_id uuid;
+begin
+  if coalesce(new_credentials ->> 'auth_token', '') = '' then
+    raise exception 'fatsecret_auth_token_required';
+  end if;
+
+  if coalesce(new_credentials ->> 'auth_secret', '') = '' then
+    raise exception 'fatsecret_auth_secret_required';
+  end if;
+
+  select vault_secret_id
+  into existing_secret_id
+  from private.fatsecret_connections
+  where user_id = target_user_id
+  for update;
+
+  if existing_secret_id is not null then
+    perform vault.update_secret(existing_secret_id, new_credentials::text);
+
+    update private.fatsecret_connections
+    set updated_at = timezone('utc', now())
+    where user_id = target_user_id;
+
+    return;
+  end if;
+
+  next_secret_id := vault.create_secret(new_credentials::text);
+
+  begin
+    insert into private.fatsecret_connections (
+      user_id,
+      vault_secret_id
+    )
+    values (
+      target_user_id,
+      next_secret_id
+    );
+  exception
+    when unique_violation then
+      delete from vault.secrets
+      where id = next_secret_id;
+
+      select vault_secret_id
+      into existing_secret_id
+      from private.fatsecret_connections
+      where user_id = target_user_id
+      for update;
+
+      if existing_secret_id is null then
+        raise;
+      end if;
+
+      perform vault.update_secret(existing_secret_id, new_credentials::text);
+
+      update private.fatsecret_connections
+      set updated_at = timezone('utc', now())
+      where user_id = target_user_id;
+  end;
+end;
+$$;
+
+create or replace function public.fatsecret_update_last_synced_date(
+  target_user_id uuid,
+  new_last_synced_date date
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, private
+as $$
+begin
+  update private.fatsecret_connections
+  set last_synced_date = new_last_synced_date,
+      updated_at = timezone('utc', now())
+  where user_id = target_user_id;
+end;
+$$;
+
+create or replace function public.fatsecret_delete_connection(target_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, private, vault
+as $$
+declare
+  existing_secret_id uuid;
+begin
+  select vault_secret_id
+  into existing_secret_id
+  from private.fatsecret_connections
+  where user_id = target_user_id
+  for update;
+
+  if existing_secret_id is not null then
+    delete from vault.secrets
+    where id = existing_secret_id;
+  end if;
+
+  delete from private.fatsecret_connections
+  where user_id = target_user_id;
+end;
+$$;
+
+create or replace function public.fatsecret_list_connected_users()
+returns table(user_id uuid)
+language sql
+security definer
+set search_path = public, private
+as $$
+  select connection.user_id
+  from private.fatsecret_connections connection
+  order by connection.updated_at asc;
+$$;
+
+create or replace function public.fatsecret_acquire_sync_lease(
+  target_user_id uuid,
+  requested_lease_token uuid,
+  lease_seconds integer default 1800
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+declare
+  current_time timestamptz := timezone('utc', now());
+  effective_lease_seconds integer := greatest(coalesce(lease_seconds, 1800), 60);
+  affected_rows integer := 0;
+begin
+  delete from private.fatsecret_sync_leases
+  where expires_at <= current_time;
+
+  insert into private.fatsecret_sync_leases (
+    user_id,
+    lease_token,
+    expires_at
+  )
+  values (
+    target_user_id,
+    requested_lease_token,
+    current_time + make_interval(secs => effective_lease_seconds)
+  )
+  on conflict (user_id) do update
+    set lease_token = excluded.lease_token,
+        expires_at = excluded.expires_at,
+        updated_at = current_time
+  where private.fatsecret_sync_leases.expires_at <= current_time;
+
+  get diagnostics affected_rows = row_count;
+  return affected_rows > 0;
+end;
+$$;
+
+create or replace function public.fatsecret_release_sync_lease(
+  target_user_id uuid,
+  requested_lease_token uuid
+)
+returns void
+language sql
+security definer
+set search_path = pg_catalog, public, private
+as $$
+  delete from private.fatsecret_sync_leases
+  where user_id = target_user_id
+    and lease_token = requested_lease_token;
+$$;
+
 drop trigger if exists user_settings_sync_phase_started_at on public.user_settings;
 create trigger user_settings_sync_phase_started_at
 before insert or update on public.user_settings
@@ -544,11 +829,14 @@ alter table public.profiles enable row level security;
 alter table public.user_settings enable row level security;
 alter table private.hevy_api_connections enable row level security;
 alter table private.hevy_sync_leases enable row level security;
+alter table private.fatsecret_connections enable row level security;
+alter table private.fatsecret_sync_leases enable row level security;
 alter table public.daily_entries enable row level security;
 alter table public.checklist_templates enable row level security;
 alter table public.daily_checklists enable row level security;
 alter table public.data_imports enable row level security;
 alter table public.source_workouts enable row level security;
+alter table public.source_nutrition_entries enable row level security;
 alter table public.supplement_catalog enable row level security;
 alter table public.user_supplements enable row level security;
 alter table public.supplement_logs enable row level security;
@@ -701,6 +989,31 @@ on public.source_workouts
 for delete
 using (auth.uid() = user_id);
 
+drop policy if exists "source_nutrition_entries_select_own" on public.source_nutrition_entries;
+create policy "source_nutrition_entries_select_own"
+on public.source_nutrition_entries
+for select
+using (auth.uid() = user_id);
+
+drop policy if exists "source_nutrition_entries_insert_own" on public.source_nutrition_entries;
+create policy "source_nutrition_entries_insert_own"
+on public.source_nutrition_entries
+for insert
+with check (auth.uid() = user_id);
+
+drop policy if exists "source_nutrition_entries_update_own" on public.source_nutrition_entries;
+create policy "source_nutrition_entries_update_own"
+on public.source_nutrition_entries
+for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+drop policy if exists "source_nutrition_entries_delete_own" on public.source_nutrition_entries;
+create policy "source_nutrition_entries_delete_own"
+on public.source_nutrition_entries
+for delete
+using (auth.uid() = user_id);
+
 drop policy if exists "supplement_catalog_select_authenticated" on public.supplement_catalog;
 create policy "supplement_catalog_select_authenticated"
 on public.supplement_catalog
@@ -843,6 +1156,14 @@ revoke all on function public.hevy_delete_api_key(uuid) from public, anon, authe
 revoke all on function public.hevy_list_connected_users() from public, anon, authenticated;
 revoke all on function public.hevy_acquire_sync_lease(uuid, uuid, integer) from public, anon, authenticated;
 revoke all on function public.hevy_release_sync_lease(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.fatsecret_has_connection(uuid) from public, anon, authenticated;
+revoke all on function public.fatsecret_load_connection(uuid) from public, anon, authenticated;
+revoke all on function public.fatsecret_store_connection(uuid, jsonb) from public, anon, authenticated;
+revoke all on function public.fatsecret_update_last_synced_date(uuid, date) from public, anon, authenticated;
+revoke all on function public.fatsecret_delete_connection(uuid) from public, anon, authenticated;
+revoke all on function public.fatsecret_list_connected_users() from public, anon, authenticated;
+revoke all on function public.fatsecret_acquire_sync_lease(uuid, uuid, integer) from public, anon, authenticated;
+revoke all on function public.fatsecret_release_sync_lease(uuid, uuid) from public, anon, authenticated;
 
 grant execute on function public.hevy_has_api_key(uuid) to service_role;
 grant execute on function public.hevy_load_api_key(uuid) to service_role;
@@ -851,3 +1172,11 @@ grant execute on function public.hevy_delete_api_key(uuid) to service_role;
 grant execute on function public.hevy_list_connected_users() to service_role;
 grant execute on function public.hevy_acquire_sync_lease(uuid, uuid, integer) to service_role;
 grant execute on function public.hevy_release_sync_lease(uuid, uuid) to service_role;
+grant execute on function public.fatsecret_has_connection(uuid) to service_role;
+grant execute on function public.fatsecret_load_connection(uuid) to service_role;
+grant execute on function public.fatsecret_store_connection(uuid, jsonb) to service_role;
+grant execute on function public.fatsecret_update_last_synced_date(uuid, date) to service_role;
+grant execute on function public.fatsecret_delete_connection(uuid) to service_role;
+grant execute on function public.fatsecret_list_connected_users() to service_role;
+grant execute on function public.fatsecret_acquire_sync_lease(uuid, uuid, integer) to service_role;
+grant execute on function public.fatsecret_release_sync_lease(uuid, uuid) to service_role;

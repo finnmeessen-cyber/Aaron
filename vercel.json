@@ -3,6 +3,10 @@
     {
       "path": "/api/hevy/sync/auto",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/fatsecret/sync/auto",
+      "schedule": "0 1 * * *"
     }
   ]
 }

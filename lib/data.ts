@@ -111,6 +111,24 @@ export type SupplementsPageData = {
 };
 
 export type NutritionPageData = {
+  fatsecretDaily: {
+    entries: Array<{
+      calories: number | null;
+      carbsG: number | null;
+      fatG: number | null;
+      foodName: string;
+      id: string;
+      mealType: string;
+      proteinG: number | null;
+    }>;
+    selectedDate: string;
+    totals: {
+      calories: number | null;
+      carbsG: number | null;
+      fatG: number | null;
+      proteinG: number | null;
+    };
+  };
   mealTemplates: MealTemplate[];
   settings: UserSettings | null;
 };
@@ -499,13 +517,35 @@ export async function getNutritionPageData(
   supabase: TypedSupabase,
   userId: string
 ): Promise<NutritionPageData> {
-  const [{ data: templates }, { data: settings }] = await Promise.all([
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("timezone")
+    .eq("id", userId)
+    .maybeSingle();
+  const profileRow = (profile ?? null) as Pick<Profile, "timezone"> | null;
+  const selectedDate = toDateInputValue(new Date(), profileRow?.timezone ?? "Europe/Berlin");
+  const [{ data: templates }, { data: settings }, { data: todayEntry }, { data: todayNutritionEntries }] =
+    await Promise.all([
     supabase
       .from("meal_templates")
       .select("*")
       .or(`user_id.is.null,user_id.eq.${userId}`)
       .order("sort_order", { ascending: true }),
-    supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle()
+    supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle(),
+    supabase
+      .from("daily_entries")
+      .select("entry_date, calories, protein_g, carbs_g, fat_g")
+      .eq("user_id", userId)
+      .eq("entry_date", selectedDate)
+      .maybeSingle(),
+    supabase
+      .from("source_nutrition_entries")
+      .select("id, meal_type, food_name, calories, protein_g, carbs_g, fat_g")
+      .eq("user_id", userId)
+      .eq("provider", "fatsecret")
+      .eq("entry_date", selectedDate)
+      .order("meal_type", { ascending: true })
+      .order("created_at", { ascending: true })
   ]);
 
   const templateRows: MealTemplate[] = templates ?? [];
@@ -519,6 +559,32 @@ export async function getNutritionPageData(
   }
 
   return {
+    fatsecretDaily: {
+      entries: ((todayNutritionEntries ?? []) as Array<{
+        calories: number | null;
+        carbs_g: number | null;
+        fat_g: number | null;
+        food_name: string;
+        id: string;
+        meal_type: string;
+        protein_g: number | null;
+      }>).map((entry) => ({
+        calories: entry.calories,
+        carbsG: entry.carbs_g,
+        fatG: entry.fat_g,
+        foodName: entry.food_name,
+        id: entry.id,
+        mealType: entry.meal_type,
+        proteinG: entry.protein_g
+      })),
+      selectedDate,
+      totals: {
+        calories: (todayEntry as { calories?: number | null } | null)?.calories ?? null,
+        carbsG: (todayEntry as { carbs_g?: number | null } | null)?.carbs_g ?? null,
+        fatG: (todayEntry as { fat_g?: number | null } | null)?.fat_g ?? null,
+        proteinG: (todayEntry as { protein_g?: number | null } | null)?.protein_g ?? null
+      }
+    },
     mealTemplates: [...merged.values()].sort((left, right) => left.sort_order - right.sort_order),
     settings: settingsRow
   };
