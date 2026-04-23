@@ -25,9 +25,17 @@ import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { shiftDateKey, toDateInputValue } from "@/lib/utils";
 
-type DatabaseSupabase = Pick<ReturnType<typeof createServerSupabaseClient>, "from">;
-type AdminSupabase = ReturnType<typeof createAdminSupabaseClient>;
-type MutationError = { message: string } | null;
+type UserPersistenceSupabase = Pick<ReturnType<typeof createServerSupabaseClient>, "from">;
+type ServiceRolePersistenceSupabase = Pick<ReturnType<typeof createAdminSupabaseClient>, "from">;
+type PersistenceSupabase = UserPersistenceSupabase | ServiceRolePersistenceSupabase;
+type PrivilegedSupabase = ReturnType<typeof createAdminSupabaseClient>;
+type FatSecretSyncClientMode = "service_role" | "user_session";
+type MutationError = {
+  code?: string;
+  details?: string | null;
+  hint?: string | null;
+  message: string;
+} | null;
 type RpcCallable = {
   rpc: <T>(fn: string, args?: Record<string, unknown>) => Promise<{ data: T | null; error: MutationError }>;
 };
@@ -79,22 +87,74 @@ function buildDateRange(startDate: string, endDate: string) {
 }
 
 async function callAdminRpc<T>(
-  adminSupabase: AdminSupabase,
+  privilegedSupabase: PrivilegedSupabase,
   fn: string,
   args: Record<string, unknown>
 ) {
-  const rpcClient = adminSupabase as unknown as RpcCallable;
-  const { data, error } = await rpcClient.rpc<T>(fn, args);
+  try {
+    const rpcClient = privilegedSupabase as unknown as RpcCallable;
+    const { data, error } = await rpcClient.rpc<T>(fn, args);
 
-  if (error) {
-    throw new FatSecretSyncError("Unable to access the stored FatSecret connection.", 500);
+    if (error) {
+      console.error("FatSecret DEBUG ERROR", {
+        error: {
+          code: error.code ?? null,
+          details: error.details ?? null,
+          hint: error.hint ?? null,
+          message: error.message
+        },
+        fn,
+        step: fn === "fatsecret_load_connection" ? "connection_access" : fn
+      });
+
+      throw new FatSecretSyncError(`FatSecret RPC ${fn} failed: ${error.message}.`, 500);
+    }
+
+    return data ?? null;
+  } catch (error) {
+    if (error instanceof FatSecretSyncError) {
+      throw error;
+    }
+
+    console.error("FatSecret DEBUG ERROR", {
+      error:
+        error instanceof Error
+          ? {
+              message: error.message,
+              name: error.name
+            }
+          : error,
+      fn,
+      step: fn === "fatsecret_load_connection" ? "connection_access" : fn
+    });
+
+    throw error;
   }
-
-  return data ?? null;
 }
 
-async function getUserTimezone(supabase: DatabaseSupabase, userId: string) {
-  const { data, error } = await supabase
+function assertPersistenceSupabase(persistenceSupabase: PersistenceSupabase) {
+  if (!persistenceSupabase || typeof persistenceSupabase.from !== "function") {
+    throw new FatSecretSyncError("FatSecret persistence client is not configured correctly.", 500);
+  }
+}
+
+function logFatSecretSyncClientModes({
+  persistenceClientMode,
+  triggerSource
+}: {
+  persistenceClientMode: FatSecretSyncClientMode;
+  triggerSource: "manual" | "status" | "cron";
+}) {
+  console.log("FatSecret DEBUG CLIENT MODES", {
+    persistenceClientMode,
+    privilegedClientMode: "service_role",
+    step: "sync_client_modes",
+    triggerSource
+  });
+}
+
+async function getUserTimezone(persistenceSupabase: PersistenceSupabase, userId: string) {
+  const { data, error } = await persistenceSupabase
     .from("profiles")
     .select("timezone")
     .eq("id", userId)
@@ -154,19 +214,38 @@ function resolveSyncCursor({
 }
 
 async function acquireFatSecretSyncLease(
-  adminSupabase: AdminSupabase,
+  privilegedSupabase: PrivilegedSupabase,
   userId: string
 ): Promise<FatSecretSyncLease> {
+  console.log("FatSecret sync step:", "acquire_lease");
+
   const leaseToken = crypto.randomUUID();
-  const acquired = await callAdminRpc<AcquireFatSecretSyncLeaseResult>(
-    adminSupabase,
-    "fatsecret_acquire_sync_lease",
-    {
-      lease_seconds: 1800,
-      requested_lease_token: leaseToken,
-      target_user_id: userId
-    }
-  );
+  let acquired: AcquireFatSecretSyncLeaseResult | null = null;
+
+  try {
+    acquired = await callAdminRpc<AcquireFatSecretSyncLeaseResult>(
+      privilegedSupabase,
+      "fatsecret_acquire_sync_lease",
+      {
+        lease_seconds: 1800,
+        requested_lease_token: leaseToken,
+        target_user_id: userId
+      }
+    );
+  } catch (error) {
+    console.error("FatSecret DEBUG ERROR", {
+      error:
+        error instanceof Error
+          ? {
+              message: error.message,
+              name: error.name
+            }
+          : error,
+      step: "acquire_lease"
+    });
+
+    throw error;
+  }
 
   if (!acquired) {
     throw new FatSecretSyncError("A FatSecret sync is already running for this account.", 409);
@@ -178,16 +257,16 @@ async function acquireFatSecretSyncLease(
   };
 }
 
-async function releaseFatSecretSyncLease(adminSupabase: AdminSupabase, lease: FatSecretSyncLease) {
-  await callAdminRpc<null>(adminSupabase, "fatsecret_release_sync_lease", {
+async function releaseFatSecretSyncLease(privilegedSupabase: PrivilegedSupabase, lease: FatSecretSyncLease) {
+  await callAdminRpc<null>(privilegedSupabase, "fatsecret_release_sync_lease", {
     requested_lease_token: lease.leaseToken,
     target_user_id: lease.userId
   });
 }
 
-export async function hasStoredFatSecretConnection(adminSupabase: AdminSupabase, userId: string) {
+export async function hasStoredFatSecretConnection(privilegedSupabase: PrivilegedSupabase, userId: string) {
   const result = await callAdminRpc<HasFatSecretConnectionResult>(
-    adminSupabase,
+    privilegedSupabase,
     "fatsecret_has_connection",
     {
       target_user_id: userId
@@ -198,29 +277,46 @@ export async function hasStoredFatSecretConnection(adminSupabase: AdminSupabase,
 }
 
 export async function loadStoredFatSecretConnection(
-  adminSupabase: AdminSupabase,
+  privilegedSupabase: PrivilegedSupabase,
   userId: string
 ) {
-  const result = await callAdminRpc<LoadFatSecretConnectionResult>(
-    adminSupabase,
-    "fatsecret_load_connection",
-    {
-      target_user_id: userId
-    }
-  );
+  console.log("FatSecret sync step:", "load_connection");
 
-  return mapStoredConnection(result);
+  try {
+    const result = await callAdminRpc<LoadFatSecretConnectionResult>(
+      privilegedSupabase,
+      "fatsecret_load_connection",
+      {
+        target_user_id: userId
+      }
+    );
+
+    return mapStoredConnection(result);
+  } catch (error) {
+    console.error("FatSecret DEBUG ERROR", {
+      error:
+        error instanceof Error
+          ? {
+              message: error.message,
+              name: error.name
+            }
+          : error,
+      step: "load_connection"
+    });
+
+    throw error;
+  }
 }
 
 export async function storeFatSecretConnection(
-  adminSupabase: AdminSupabase,
+  privilegedSupabase: PrivilegedSupabase,
   userId: string,
   credentials: {
     authSecret: string;
     authToken: string;
   }
 ) {
-  await callAdminRpc<null>(adminSupabase, "fatsecret_store_connection", {
+  await callAdminRpc<null>(privilegedSupabase, "fatsecret_store_connection", {
     new_credentials: {
       auth_secret: credentials.authSecret,
       auth_token: credentials.authToken
@@ -230,28 +326,28 @@ export async function storeFatSecretConnection(
 }
 
 export async function updateFatSecretLastSyncedDate(
-  adminSupabase: AdminSupabase,
+  privilegedSupabase: PrivilegedSupabase,
   userId: string,
   lastSyncedDate: string
 ) {
-  await callAdminRpc<null>(adminSupabase, "fatsecret_update_last_synced_date", {
+  await callAdminRpc<null>(privilegedSupabase, "fatsecret_update_last_synced_date", {
     new_last_synced_date: lastSyncedDate,
     target_user_id: userId
   });
 }
 
 export async function deleteStoredFatSecretConnection(
-  adminSupabase: AdminSupabase,
+  privilegedSupabase: PrivilegedSupabase,
   userId: string
 ) {
-  await callAdminRpc<null>(adminSupabase, "fatsecret_delete_connection", {
+  await callAdminRpc<null>(privilegedSupabase, "fatsecret_delete_connection", {
     target_user_id: userId
   });
 }
 
-export async function listStoredFatSecretConnectionUserIds(adminSupabase: AdminSupabase) {
+export async function listStoredFatSecretConnectionUserIds(privilegedSupabase: PrivilegedSupabase) {
   const result = await callAdminRpc<ListStoredFatSecretUsersResult>(
-    adminSupabase,
+    privilegedSupabase,
     "fatsecret_list_connected_users",
     {}
   );
@@ -262,17 +358,22 @@ export async function listStoredFatSecretConnectionUserIds(adminSupabase: AdminS
 }
 
 export async function getFatSecretSyncStatus({
-  adminSupabase,
-  supabase,
+  privilegedSupabase,
+  userSupabase,
   userId
 }: {
-  adminSupabase: AdminSupabase;
-  supabase: DatabaseSupabase;
+  privilegedSupabase: PrivilegedSupabase;
+  userSupabase: UserPersistenceSupabase;
   userId: string;
 }): Promise<FatSecretConnectionStatus> {
+  assertPersistenceSupabase(userSupabase);
+  logFatSecretSyncClientModes({
+    persistenceClientMode: "user_session",
+    triggerSource: "status"
+  });
   const [storedConnection, latestImport] = await Promise.all([
-    loadStoredFatSecretConnection(adminSupabase, userId),
-    getLatestSuccessfulFatSecretApiImport(supabase, userId)
+    loadStoredFatSecretConnection(privilegedSupabase, userId),
+    getLatestSuccessfulFatSecretApiImport(userSupabase, userId)
   ]);
   const metadata =
     latestImport && isSuccessfulFatSecretApiImportMetadata(latestImport.metadata)
@@ -288,31 +389,46 @@ export async function getFatSecretSyncStatus({
 }
 
 export async function syncFatSecretEntries({
-  adminSupabase,
+  persistenceClientMode,
+  persistenceSupabase,
+  privilegedSupabase,
   storedConnection,
-  supabase,
   triggerSource = "manual",
   userId,
   userTimezone
 }: {
-  adminSupabase: AdminSupabase;
+  persistenceClientMode: FatSecretSyncClientMode;
+  persistenceSupabase: PersistenceSupabase;
+  privilegedSupabase: PrivilegedSupabase;
   storedConnection: FatSecretStoredConnection;
-  supabase: DatabaseSupabase;
   triggerSource?: FatSecretSyncTriggerSource;
   userId: string;
   userTimezone: string | null;
 }): Promise<FatSecretSyncResult> {
-  const latestImport = await getLatestSuccessfulFatSecretApiImport(supabase, userId);
+  assertPersistenceSupabase(persistenceSupabase);
+
+  const latestImport = await getLatestSuccessfulFatSecretApiImport(persistenceSupabase, userId);
   const { endDate, since, startDate, syncMode } = resolveSyncCursor({
     latestImport,
     storedConnection,
     userTimezone
   });
+  console.log("FatSecret DEBUG RANGE", {
+    endDate,
+    since,
+    startDate,
+    step: "sync_range",
+    syncMode,
+    triggerSource,
+    persistenceClientMode,
+    privilegedClientMode: "service_role",
+    userTimezone
+  });
   const syncStartedAt = new Date().toISOString();
   const pendingImport = await persistFatSecretApiSync.createPendingImport({
     endDate,
+    persistenceSupabase,
     startDate,
-    supabase,
     syncMode,
     syncStartedAt,
     triggerSource,
@@ -327,23 +443,81 @@ export async function syncFatSecretEntries({
     let fetchedEntries = 0;
 
     for (const date of syncedDates) {
-      const entries = await getMealsForDate(storedConnection, date);
+      console.log("FatSecret sync step:", "fetch_entries");
+      console.log("FatSecret DEBUG DATE", {
+        requestedDate: date,
+        step: "fetch_entries",
+        triggerSource
+      });
+
+      let entries: Awaited<ReturnType<typeof getMealsForDate>>;
+
+      try {
+        entries = await getMealsForDate(storedConnection, date);
+      } catch (error) {
+        console.error("FatSecret DEBUG ERROR", {
+          error:
+            error instanceof Error
+              ? {
+                  message: error.message,
+                  name: error.name
+                }
+              : error,
+          providerMethod: "food_entries.get",
+          step: "fetch_entries",
+          triggerSource
+        });
+
+        throw error;
+      }
+
       entriesByDate.set(date, entries);
       fetchedEntries += entries.length;
+      console.log("FatSecret DEBUG FETCH COUNT", {
+        requestedDate: date,
+        returnedEntries: entries.length,
+        runningFetchedEntries: fetchedEntries,
+        step: "fetch_entries",
+        triggerSource
+      });
     }
 
+    if (fetchedEntries === 0) {
+      console.warn("FatSecret DEBUG ZERO FETCH", {
+        endDate,
+        persistenceClientMode,
+        privilegedClientMode: "service_role",
+        startDate,
+        step: "fetch_entries",
+        syncMode,
+        triggerSource,
+        userTimezone
+      });
+    }
+
+    console.log("FatSecret sync step:", "upsert_entries");
     const result = await persistFatSecretApiSync.completeSuccess({
       dataImportId: pendingImport.dataImportId,
       entriesByDate,
       fetchedEntries,
+      persistenceSupabase,
       previousMetadata: pendingImport.metadata,
-      supabase,
       syncedDates,
       userId
     });
+    console.log("FatSecret DEBUG SYNC RESULT", {
+      fetchedEntries: result.fetchedEntries,
+      persistenceClientMode,
+      privilegedClientMode: "service_role",
+      startDate: result.startDate,
+      step: "sync_complete",
+      triggerSource,
+      upsertedEntries: result.upsertedEntries,
+      updatedDailyEntries: result.updatedDailyEntries
+    });
 
     try {
-      await updateFatSecretLastSyncedDate(adminSupabase, userId, endDate);
+      await updateFatSecretLastSyncedDate(privilegedSupabase, userId, endDate);
     } catch (cursorError) {
       console.error("Unable to persist the FatSecret sync cursor", cursorError);
     }
@@ -357,8 +531,8 @@ export async function syncFatSecretEntries({
       await persistFatSecretApiSync.completeFailure({
         dataImportId: pendingImport.dataImportId,
         error,
+        persistenceSupabase,
         previousMetadata: pendingImport.metadata,
-        supabase,
         userId
       });
     } catch (finalizeError) {
@@ -370,47 +544,59 @@ export async function syncFatSecretEntries({
 }
 
 export async function runManualFatSecretSync({
-  adminSupabase,
-  supabase,
+  privilegedSupabase,
+  userSupabase,
   userId
 }: {
-  adminSupabase: AdminSupabase;
-  supabase: DatabaseSupabase;
+  privilegedSupabase: PrivilegedSupabase;
+  userSupabase: UserPersistenceSupabase;
   userId: string;
 }) {
-  const storedConnection = await loadStoredFatSecretConnection(adminSupabase, userId);
+  assertPersistenceSupabase(userSupabase);
+  logFatSecretSyncClientModes({
+    persistenceClientMode: "user_session",
+    triggerSource: "manual"
+  });
+  const storedConnection = await loadStoredFatSecretConnection(privilegedSupabase, userId);
 
   if (!storedConnection) {
     throw new FatSecretSyncError("Connect FatSecret first before starting a nutrition sync.", 400);
   }
 
-  const lease = await acquireFatSecretSyncLease(adminSupabase, userId);
+  const lease = await acquireFatSecretSyncLease(privilegedSupabase, userId);
 
   try {
-    const userTimezone = await getUserTimezone(supabase, userId);
+    const userTimezone = await getUserTimezone(userSupabase, userId);
     return await syncFatSecretEntries({
-      adminSupabase,
+      persistenceClientMode: "user_session",
+      persistenceSupabase: userSupabase,
+      privilegedSupabase,
       storedConnection,
-      supabase,
       triggerSource: "manual",
       userId,
       userTimezone
     });
   } finally {
-    await releaseFatSecretSyncLease(adminSupabase, lease);
+    await releaseFatSecretSyncLease(privilegedSupabase, lease);
   }
 }
 
 export async function syncStoredFatSecretEntriesForUser({
-  adminSupabase,
-  supabase,
+  persistenceSupabase,
+  privilegedSupabase,
   userId
 }: {
-  adminSupabase: AdminSupabase;
-  supabase: DatabaseSupabase;
+  persistenceSupabase: ServiceRolePersistenceSupabase;
+  privilegedSupabase: PrivilegedSupabase;
   userId: string;
 }): Promise<FatSecretAutoSyncUserResult> {
-  const storedConnection = await loadStoredFatSecretConnection(adminSupabase, userId);
+  assertPersistenceSupabase(persistenceSupabase);
+  logFatSecretSyncClientModes({
+    persistenceClientMode: "service_role",
+    triggerSource: "cron"
+  });
+
+  const storedConnection = await loadStoredFatSecretConnection(privilegedSupabase, userId);
 
   if (!storedConnection) {
     return {
@@ -423,7 +609,7 @@ export async function syncStoredFatSecretEntriesForUser({
   let lease: FatSecretSyncLease;
 
   try {
-    lease = await acquireFatSecretSyncLease(adminSupabase, userId);
+    lease = await acquireFatSecretSyncLease(privilegedSupabase, userId);
   } catch (error) {
     return {
       reason:
@@ -434,11 +620,12 @@ export async function syncStoredFatSecretEntriesForUser({
   }
 
   try {
-    const userTimezone = await getUserTimezone(supabase, userId);
+    const userTimezone = await getUserTimezone(persistenceSupabase, userId);
     const result = await syncFatSecretEntries({
-      adminSupabase,
+      persistenceClientMode: "service_role",
+      persistenceSupabase,
+      privilegedSupabase,
       storedConnection,
-      supabase,
       triggerSource: "cron",
       userId,
       userTimezone
@@ -456,6 +643,6 @@ export async function syncStoredFatSecretEntriesForUser({
       userId
     };
   } finally {
-    await releaseFatSecretSyncLease(adminSupabase, lease);
+    await releaseFatSecretSyncLease(privilegedSupabase, lease);
   }
 }

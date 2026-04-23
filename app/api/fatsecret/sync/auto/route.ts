@@ -74,10 +74,11 @@ export async function GET(request: NextRequest) {
   try {
     authorizeCronRequest(request);
 
-    const adminSupabase = createAdminSupabaseClient();
+    const privilegedSupabase = createAdminSupabaseClient();
+    const persistenceSupabase = privilegedSupabase;
     const startedAt = new Date().toISOString();
     const limit = parseLimit(request);
-    const userIds = await listStoredFatSecretConnectionUserIds(adminSupabase);
+    const userIds = await listStoredFatSecretConnectionUserIds(privilegedSupabase);
     const selectedUserIds = userIds.slice(0, limit);
     const results: Awaited<ReturnType<typeof syncStoredFatSecretEntriesForUser>>[] = [];
     let synced = 0;
@@ -90,8 +91,8 @@ export async function GET(request: NextRequest) {
     for (const userId of selectedUserIds) {
       try {
         const result = await syncStoredFatSecretEntriesForUser({
-          adminSupabase,
-          supabase: adminSupabase as Parameters<typeof syncStoredFatSecretEntriesForUser>[0]["supabase"],
+          persistenceSupabase,
+          privilegedSupabase,
           userId
         });
 

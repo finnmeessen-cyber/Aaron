@@ -1,9 +1,12 @@
 import "server-only";
 
 import { FATSECRET_PROVIDER, type DailyEntryInsert } from "@/lib/fatsecret/types";
+import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
-type DatabaseSupabase = Pick<ReturnType<typeof createServerSupabaseClient>, "from">;
+type PersistenceSupabase =
+  | Pick<ReturnType<typeof createServerSupabaseClient>, "from">
+  | Pick<ReturnType<typeof createAdminSupabaseClient>, "from">;
 type MutationError = { message: string } | null;
 type MutationUpsertOptions = {
   count?: "exact" | "planned" | "estimated";
@@ -17,11 +20,13 @@ type UpsertableTable<Payload> = {
 
 export async function aggregateFatSecretDailyEntries({
   dates,
-  supabase,
+  persistenceSupabase,
+  triggerSource,
   userId
 }: {
   dates: string[];
-  supabase: DatabaseSupabase;
+  persistenceSupabase: PersistenceSupabase;
+  triggerSource: "manual" | "cron";
   userId: string;
 }) {
   const uniqueDates = Array.from(new Set(dates)).sort();
@@ -34,13 +39,13 @@ export async function aggregateFatSecretDailyEntries({
     { data: nutritionData, error: nutritionError },
     { data: existingEntriesData, error: existingEntriesError }
   ] = await Promise.all([
-    supabase
+    persistenceSupabase
       .from("source_nutrition_entries")
       .select("entry_date, calories, protein_g, carbs_g, fat_g")
       .eq("user_id", userId)
       .eq("provider", FATSECRET_PROVIDER)
       .in("entry_date", uniqueDates),
-    supabase
+    persistenceSupabase
       .from("daily_entries")
       .select("entry_date, nutrition_source")
       .eq("user_id", userId)
@@ -123,8 +128,15 @@ export async function aggregateFatSecretDailyEntries({
     return 0;
   }
 
+  console.log("FatSecret DEBUG AGGREGATION", {
+    dateCount: uniqueDates.length,
+    payloadCount: payload.length,
+    step: "aggregate_daily_entries",
+    triggerSource,
+    userId
+  });
   const dailyEntriesTable =
-    supabase.from("daily_entries") as unknown as UpsertableTable<DailyEntryInsert[]>;
+    persistenceSupabase.from("daily_entries") as unknown as UpsertableTable<DailyEntryInsert[]>;
   const { error: upsertError } = await dailyEntriesTable.upsert(payload, {
     onConflict: "user_id,entry_date"
   });

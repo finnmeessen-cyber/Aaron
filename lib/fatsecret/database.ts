@@ -14,10 +14,18 @@ import {
   type FatSecretSyncTriggerSource,
   type SourceNutritionEntryInsert
 } from "@/lib/fatsecret/types";
+import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
-type DatabaseSupabase = Pick<ReturnType<typeof createServerSupabaseClient>, "from">;
-type MutationError = { message: string } | null;
+type PersistenceSupabase =
+  | Pick<ReturnType<typeof createServerSupabaseClient>, "from">
+  | Pick<ReturnType<typeof createAdminSupabaseClient>, "from">;
+type MutationError = {
+  code?: string;
+  details?: string | null;
+  hint?: string | null;
+  message: string;
+} | null;
 type MutationInsertOptions = {
   count?: "exact" | "planned" | "estimated";
   defaultToNull?: boolean;
@@ -38,8 +46,13 @@ type InsertReturningTable<Payload, Row> = {
     };
   };
 };
-type UpsertableTable<Payload> = {
-  upsert: (values: Payload, options?: MutationUpsertOptions) => Promise<{ error: MutationError }>;
+type UpsertReturningTable<Payload, Row> = {
+  upsert: (
+    values: Payload,
+    options?: MutationUpsertOptions
+  ) => {
+    select: (columns?: string) => Promise<{ count: number | null; data: Row[] | null; error: MutationError }>;
+  };
 };
 type ChainedUpdateTable<Payload> = {
   update: (values: Payload) => {
@@ -172,10 +185,10 @@ export function isSuccessfulFatSecretApiImportMetadata(
 }
 
 export async function getLatestSuccessfulFatSecretApiImport(
-  supabase: DatabaseSupabase,
+  persistenceSupabase: PersistenceSupabase,
   userId: string
 ) {
-  const { data, error } = await supabase
+  const { data, error } = await persistenceSupabase
     .from("data_imports")
     .select("*")
     .eq("user_id", userId)
@@ -194,12 +207,12 @@ export async function getLatestSuccessfulFatSecretApiImport(
 }
 
 async function createDataImport(
-  supabase: DatabaseSupabase,
+  persistenceSupabase: PersistenceSupabase,
   userId: string,
   metadata: FatSecretApiImportMetadata
 ) {
   const dataImportsTable =
-    supabase.from("data_imports") as unknown as InsertReturningTable<DataImportInsert, DataImportRow>;
+    persistenceSupabase.from("data_imports") as unknown as InsertReturningTable<DataImportInsert, DataImportRow>;
   const payload: DataImportInsert = {
     metadata,
     provider: FATSECRET_PROVIDER,
@@ -215,12 +228,12 @@ async function createDataImport(
 }
 
 async function updateDataImportMetadata(
-  supabase: DatabaseSupabase,
+  persistenceSupabase: PersistenceSupabase,
   userId: string,
   dataImportId: string,
   metadata: FatSecretApiImportMetadata
 ) {
-  const dataImportsUpdateTable = supabase.from(
+  const dataImportsUpdateTable = persistenceSupabase.from(
     "data_imports"
   ) as unknown as ChainedUpdateTable<{ metadata: FatSecretApiImportMetadata }>;
   const { error } = await dataImportsUpdateTable
@@ -236,14 +249,16 @@ async function updateDataImportMetadata(
 async function replaceSourceNutritionEntries({
   dataImportId,
   entriesByDate,
-  supabase,
+  persistenceSupabase,
   syncedDates,
+  triggerSource,
   userId
 }: {
   dataImportId: string;
   entriesByDate: Map<string, FatSecretFoodEntry[]>;
-  supabase: DatabaseSupabase;
+  persistenceSupabase: PersistenceSupabase;
   syncedDates: string[];
+  triggerSource: FatSecretSyncTriggerSource;
   userId: string;
 }) {
   let upsertedEntries = 0;
@@ -255,21 +270,88 @@ async function replaceSourceNutritionEntries({
       continue;
     }
 
+    console.log("FatSecret sync step:", "upsert_entries");
     const payload = entries.map((entry) => buildNutritionEntryPayload(userId, dataImportId, entry));
+    const rowDebug = payload.map((entry) => ({
+      hasUserId: Boolean(entry.user_id),
+      providerEntryId: entry.provider_entry_id,
+      userId: entry.user_id
+    }));
+    console.log("FatSecret DEBUG UPSERT PAYLOAD", {
+      entryDate,
+      hasUserId: payload.every((entry) => Boolean(entry.user_id)),
+      rowCount: payload.length,
+      rows: rowDebug,
+      step: "upsert_entries",
+      triggerSource,
+      userId,
+      validProviderEntryIds: payload.every(
+        (entry) => typeof entry.provider_entry_id === "string" && entry.provider_entry_id.length > 0
+      )
+    });
     const nutritionEntriesTable =
-      supabase.from("source_nutrition_entries") as unknown as UpsertableTable<
-        SourceNutritionEntryInsert[]
+      persistenceSupabase.from("source_nutrition_entries") as unknown as UpsertReturningTable<
+        SourceNutritionEntryInsert[],
+        { id: string; provider_entry_id: string | null; user_id: string | null }
       >;
-    const { error } = await nutritionEntriesTable.upsert(payload, {
-      onConflict: "user_id,provider,provider_entry_id"
+    const upsertResponse = await nutritionEntriesTable
+      .upsert(payload, {
+        count: "exact",
+        onConflict: "user_id,provider,provider_entry_id"
+      })
+      .select("id,user_id,provider_entry_id");
+
+    console.log("FatSecret DEBUG UPSERT RESPONSE", {
+      count: upsertResponse.count ?? null,
+      entryDate,
+      error: upsertResponse.error
+        ? {
+            code: upsertResponse.error.code ?? null,
+            details: upsertResponse.error.details ?? null,
+            hint: upsertResponse.error.hint ?? null,
+            message: upsertResponse.error.message
+          }
+        : null,
+      returnedRows: Array.isArray(upsertResponse.data) ? upsertResponse.data.length : null,
+      step: "upsert_entries",
+      triggerSource,
+      userId
     });
 
-    if (error) {
-      throw new Error(`Unable to save FatSecret nutrition entries: ${error.message}.`);
+    if (upsertResponse.error) {
+      console.error("FatSecret DEBUG ERROR", {
+        error: {
+          code: upsertResponse.error.code ?? null,
+          details: upsertResponse.error.details ?? null,
+          hint: upsertResponse.error.hint ?? null,
+          message: upsertResponse.error.message
+        },
+        step: "upsert_entries",
+        target: "source_nutrition_entries",
+        triggerSource
+      });
+
+      throw new Error(`Unable to save FatSecret nutrition entries: ${upsertResponse.error.message}.`);
     }
 
-    upsertedEntries += payload.length;
+    const affectedRows =
+      upsertResponse.count ?? (Array.isArray(upsertResponse.data) ? upsertResponse.data.length : 0);
+
+    if (affectedRows === 0) {
+      throw new Error(
+        "FatSecret upsert completed without an explicit database error, but zero source_nutrition_entries rows were affected."
+      );
+    }
+
+    upsertedEntries += affectedRows;
   }
+
+  console.log("FatSecret DEBUG UPSERT RESULT", {
+    finalUpsertedEntries: upsertedEntries,
+    step: "upsert_entries",
+    syncedDates: syncedDates.length,
+    triggerSource
+  });
 
   return {
     upsertedEntries
@@ -280,14 +362,14 @@ export const persistFatSecretApiSync = {
   async completeFailure({
     dataImportId,
     error,
+    persistenceSupabase,
     previousMetadata,
-    supabase,
     userId
   }: {
     dataImportId: string;
     error: unknown;
+    persistenceSupabase: PersistenceSupabase;
     previousMetadata: FatSecretApiImportMetadata;
-    supabase: DatabaseSupabase;
     userId: string;
   }) {
     const syncFailedAt = new Date().toISOString();
@@ -304,36 +386,60 @@ export const persistFatSecretApiSync = {
       upsertedEntries: 0
     });
 
-    await updateDataImportMetadata(supabase, userId, dataImportId, metadata);
+    await updateDataImportMetadata(persistenceSupabase, userId, dataImportId, metadata);
   },
 
   async completeSuccess({
     dataImportId,
     entriesByDate,
     fetchedEntries,
+    persistenceSupabase,
     previousMetadata,
-    supabase,
     syncedDates,
     userId
   }: {
     dataImportId: string;
     entriesByDate: Map<string, FatSecretFoodEntry[]>;
     fetchedEntries: number;
+    persistenceSupabase: PersistenceSupabase;
     previousMetadata: FatSecretApiImportMetadata;
-    supabase: DatabaseSupabase;
     syncedDates: string[];
     userId: string;
   }): Promise<FatSecretSyncResult> {
     const { upsertedEntries } = await replaceSourceNutritionEntries({
       dataImportId,
       entriesByDate,
-      supabase,
+      persistenceSupabase,
       syncedDates,
+      triggerSource: previousMetadata.trigger_source,
       userId
     });
+
+    if (fetchedEntries > 0 && upsertedEntries === 0) {
+      const entriesInWindow = syncedDates.reduce(
+        (sum, d) => sum + (entriesByDate.get(d)?.length ?? 0),
+        0
+      );
+      if (entriesInWindow > 0) {
+        throw new Error("FatSecret fetched entries, but zero rows were handed off to source_nutrition_entries.");
+      }
+    }
+
+    if (fetchedEntries === 0 && upsertedEntries === 0) {
+      console.warn("FatSecret DEBUG ZERO UPSERT", {
+        endDate: previousMetadata.end_date,
+        fetchedEntries,
+        startDate: previousMetadata.start_date,
+        step: "upsert_entries",
+        syncMode: previousMetadata.sync_mode,
+        triggerSource: previousMetadata.trigger_source
+      });
+    }
+
     const updatedDailyEntries = await aggregateFatSecretDailyEntries({
       dates: syncedDates,
-      supabase,
+      persistenceSupabase,
+      triggerSource: previousMetadata.trigger_source,
       userId
     });
     const syncCompletedAt = new Date().toISOString();
@@ -350,7 +456,7 @@ export const persistFatSecretApiSync = {
       upsertedEntries
     });
 
-    await updateDataImportMetadata(supabase, userId, dataImportId, metadata);
+    await updateDataImportMetadata(persistenceSupabase, userId, dataImportId, metadata);
 
     return {
       dataImportId,
@@ -370,16 +476,16 @@ export const persistFatSecretApiSync = {
 
   async createPendingImport({
     endDate,
+    persistenceSupabase,
     startDate,
-    supabase,
     syncMode,
     syncStartedAt,
     triggerSource,
     userId
   }: {
     endDate: string;
+    persistenceSupabase: PersistenceSupabase;
     startDate: string;
-    supabase: DatabaseSupabase;
     syncMode: FatSecretSyncMode;
     syncStartedAt: string;
     triggerSource: FatSecretSyncTriggerSource;
@@ -392,7 +498,7 @@ export const persistFatSecretApiSync = {
       syncStartedAt,
       triggerSource
     });
-    const dataImport = await createDataImport(supabase, userId, metadata);
+    const dataImport = await createDataImport(persistenceSupabase, userId, metadata);
 
     return {
       dataImportId: dataImport.id,

@@ -22,11 +22,11 @@ async function authenticateUser() {
     );
   }
 
-  const supabase = createServerSupabaseClient();
+  const userSupabase = createServerSupabaseClient();
   const {
     data: { user },
     error
-  } = await supabase.auth.getUser();
+  } = await userSupabase.auth.getUser();
 
   if (error) {
     throw new FatSecretSyncError(`Unable to verify the current user: ${error.message}.`, 401);
@@ -36,7 +36,7 @@ async function authenticateUser() {
     throw new FatSecretSyncError("You must be signed in to sync FatSecret.", 401);
   }
 
-  return { supabase, user };
+  return { userSupabase, user };
 }
 
 function toErrorResponse(error: unknown) {
@@ -54,11 +54,11 @@ function toErrorResponse(error: unknown) {
 
 export async function GET() {
   try {
-    const { supabase, user } = await authenticateUser();
-    const adminSupabase = createAdminSupabaseClient();
+    const { userSupabase, user } = await authenticateUser();
+    const privilegedSupabase = createAdminSupabaseClient();
     const status = await getFatSecretSyncStatus({
-      adminSupabase,
-      supabase,
+      privilegedSupabase,
+      userSupabase,
       userId: user.id
     });
 
@@ -70,11 +70,11 @@ export async function GET() {
 
 export async function POST() {
   try {
-    const { supabase, user } = await authenticateUser();
-    const adminSupabase = createAdminSupabaseClient();
+    const { userSupabase, user } = await authenticateUser();
+    const privilegedSupabase = createAdminSupabaseClient();
     const result = await runManualFatSecretSync({
-      adminSupabase,
-      supabase,
+      privilegedSupabase,
+      userSupabase,
       userId: user.id
     });
 
@@ -87,9 +87,9 @@ export async function POST() {
 export async function DELETE() {
   try {
     const { user } = await authenticateUser();
-    const adminSupabase = createAdminSupabaseClient();
+    const privilegedSupabase = createAdminSupabaseClient();
 
-    await deleteStoredFatSecretConnection(adminSupabase, user.id);
+    await deleteStoredFatSecretConnection(privilegedSupabase, user.id);
 
     return NextResponse.json({ ok: true });
   } catch (error) {

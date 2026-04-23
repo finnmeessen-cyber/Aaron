@@ -196,6 +196,36 @@ function getFatSecretApiErrorCode(payload: unknown) {
   return typeof code === "string" && code.trim() ? code.trim() : null;
 }
 
+function summarizeFoodEntriesPayload(payload: unknown) {
+  const payloadRecord = toJsonRecord(payload);
+  const rawFoodEntries = payloadRecord?.food_entries;
+  const foodEntriesRecord = toJsonRecord(rawFoodEntries);
+  const rawFoodEntry = foodEntriesRecord?.food_entry;
+  const rawEntries = normalizeToArray(
+    rawFoodEntry as Record<string, unknown> | Array<Record<string, unknown>>
+  );
+
+  return {
+    foodEntriesType:
+      rawFoodEntries === null
+        ? "null"
+        : Array.isArray(rawFoodEntries)
+        ? "array"
+        : typeof rawFoodEntries,
+    foodEntryType:
+      rawFoodEntry === null || rawFoodEntry === undefined
+        ? rawFoodEntry === null
+          ? "null"
+          : "undefined"
+        : Array.isArray(rawFoodEntry)
+        ? "array"
+        : typeof rawFoodEntry,
+    hasFoodEntriesKey: Boolean(payloadRecord && "food_entries" in payloadRecord),
+    rawEntryCount: rawEntries.length,
+    topLevelKeys: payloadRecord ? Object.keys(payloadRecord).slice(0, 8) : []
+  };
+}
+
 async function fatSecretOAuth1Request<T>({
   credentials,
   method = "GET",
@@ -381,6 +411,13 @@ export async function getMealsForDate(
   credentials: Pick<FatSecretStoredConnection, "authSecret" | "authToken">,
   date: string
 ): Promise<FatSecretFoodEntry[]> {
+  const requestedDateInt = toFatSecretDateInt(date);
+  console.log("FatSecret DEBUG REQUEST", {
+    requestedDate: date,
+    requestedDateInt,
+    step: "fetch_entries"
+  });
+
   const payload = await fatSecretOAuth1Request<{
     food_entries?: {
       food_entry?: Record<string, unknown> | Array<Record<string, unknown>>;
@@ -389,13 +426,20 @@ export async function getMealsForDate(
     credentials,
     path: "/rest/food-entries/v2",
     params: {
-      date: `${toFatSecretDateInt(date)}`
+      date: `${requestedDateInt}`
     }
   });
+  const payloadSummary = summarizeFoodEntriesPayload(payload);
+  console.log("FatSecret DEBUG RESPONSE", {
+    requestedDate: date,
+    requestedDateInt,
+    ...payloadSummary,
+    step: "fetch_entries"
+  });
+
   const root = toJsonRecord(payload.food_entries);
   const entries = normalizeToArray(root?.food_entry as Record<string, unknown> | Array<Record<string, unknown>>);
-
-  return entries.flatMap((entry) => {
+  const parsedEntries = entries.flatMap((entry) => {
     const providerEntryId = entry.food_entry_id;
     const dateInt = parseNumber(entry.date_int);
 
@@ -431,6 +475,28 @@ export async function getMealsForDate(
       }
     ];
   });
+
+  console.log("FatSecret DEBUG PARSE", {
+    parsedRowCount: parsedEntries.length,
+    rawEntryCount: entries.length,
+    requestedDate: date,
+    step: "fetch_entries"
+  });
+
+  if (entries.length > 0 && parsedEntries.length === 0) {
+    console.error("FatSecret DEBUG ERROR", {
+      payloadSummary,
+      requestedDate: date,
+      step: "fetch_entries"
+    });
+
+    throw new FatSecretApiError(
+      "FatSecret returned diary entries, but none of them could be parsed into source rows.",
+      502
+    );
+  }
+
+  return parsedEntries;
 }
 
 export async function searchFood(

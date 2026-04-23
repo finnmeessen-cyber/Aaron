@@ -141,8 +141,11 @@ export function FatSecretSyncCard({ daily, flashStatus = null }: FatSecretSyncCa
       });
       const payload = (await response.json().catch(() => null)) as
         | {
+            endDate?: string;
             fetchedEntries?: number;
+            syncMode?: "incremental" | "initial";
             updatedDailyEntries?: number;
+            upsertedEntries?: number;
           }
         | ErrorResponse
         | null;
@@ -157,15 +160,21 @@ export function FatSecretSyncCard({ daily, flashStatus = null }: FatSecretSyncCa
         return;
       }
 
+      const fetchedEntries = payload.fetchedEntries ?? 0;
+      const upsertedEntries = payload.upsertedEntries ?? 0;
+      const zeroEntrySync = fetchedEntries === 0 && upsertedEntries === 0;
+
       setStatus({
-        message: `FatSecret synchronisiert. ${payload.fetchedEntries ?? 0} Einträge geladen, ${payload.updatedDailyEntries ?? 0} Tageswerte aktualisiert.`,
-        tone: "success"
+        message: zeroEntrySync
+          ? "FatSecret-Sync abgeschlossen, aber es wurden 0 Nutrition-Einträge importiert. Bitte Datum und Server-Logs prüfen."
+          : `FatSecret synchronisiert. ${fetchedEntries} Einträge geladen, ${payload.updatedDailyEntries ?? 0} Tageswerte aktualisiert.`,
+        tone: zeroEntrySync ? "warning" : "success"
       });
       setSyncStatus((current) => ({
         connected: true,
         lastSyncedAt: new Date().toISOString(),
-        lastSyncedDate: daily.selectedDate,
-        lastSyncMode: current?.lastSyncedAt ? "incremental" : "initial"
+        lastSyncedDate: payload.endDate ?? daily.selectedDate,
+        lastSyncMode: payload.syncMode ?? (current?.lastSyncedAt ? "incremental" : "initial")
       }));
       notifyAppDataMutation();
       router.refresh();
