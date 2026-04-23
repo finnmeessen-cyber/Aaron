@@ -18,6 +18,10 @@ function isSafeLiveRefreshPath(pathname: string) {
   );
 }
 
+function isSafeFocusRefreshPath(pathname: string) {
+  return isSafeLiveRefreshPath(pathname);
+}
+
 export function SupabaseAuthListener() {
   const router = useRouter();
   const pathname = usePathname();
@@ -38,7 +42,7 @@ export function SupabaseAuthListener() {
         return;
       }
 
-      if (reason === "focus" && !isSafeLiveRefreshPath(pathname)) {
+      if ((reason === "focus" || reason === "navigation") && !isSafeFocusRefreshPath(pathname)) {
         return;
       }
 

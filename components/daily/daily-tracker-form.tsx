@@ -7,6 +7,7 @@ import { ClipboardPaste, Copy } from "lucide-react";
 
 import { DailyChecklistPanel } from "@/components/daily/daily-checklist-panel";
 import { DailyMetricsPanel } from "@/components/daily/daily-metrics-panel";
+import { DailySyncOverview } from "@/components/daily/daily-sync-overview";
 import { DailyTodoList } from "@/components/daily/daily-todo-list";
 import { HevyCsvUpload } from "@/components/hevy/hevy-csv-upload";
 import { Button } from "@/components/ui/button";
@@ -14,10 +15,12 @@ import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { StatusMessage } from "@/components/ui/status-message";
+import { useAutosave } from "@/lib/autosave/use-autosave";
 import type { DailyPageData } from "@/lib/data";
 import {
   type DailyChecklistItemMutationResult,
   type DailyTrackingMutationResult,
+  saveDailyEntryMutation,
   saveDailyChecklistGroupMutation,
   saveDailyChecklistItemMutation,
   saveDailyTrackingMutation
@@ -37,11 +40,13 @@ import {
   shiftDateKey,
   toDateInputValue
 } from "@/lib/utils";
-import type { TableRow } from "@/types/supabase";
+import type { TableInsert, TableRow } from "@/types/supabase";
 
 type DailyTrackerFormProps = DailyPageData;
+type DailyEntryInsert = TableInsert<"daily_entries">;
 type DailyEntryRow = TableRow<"daily_entries">;
 type DailyChecklistRow = TableRow<"daily_checklists">;
+type FormField = keyof FormState;
 
 type FormState = {
   body_weight: string;
@@ -59,6 +64,19 @@ type StatusState = {
   message: string | null;
 };
 
+type PersistedEntryContext = {
+  bodyWeight: number | null;
+  cravingsScore: number | null;
+  calories: number | null;
+  dayType: "training" | "rest" | null;
+  energyScore: number | null;
+  nutritionSource: string | null;
+  notes: string | null;
+  sleepScore: number | null;
+  trainingCompleted: boolean;
+  trainingSource: string | null;
+};
+
 type ActiveSection = "metrics" | "checklists";
 type ChecklistTemplateWithCompletion = DailyPageData["checklistTemplates"][number] & {
   completed: boolean;
@@ -72,9 +90,27 @@ const SUPPLEMENT_TODO_TASKS = {
 const SUPPLEMENT_TODO_SECTIONS_BY_TASK_ID = Object.fromEntries(
   Object.entries(SUPPLEMENT_TODO_TASKS).map(([section, taskId]) => [taskId, section])
 ) as Record<string, string>;
+const ALL_FORM_FIELDS: FormField[] = [
+  "body_weight",
+  "sleep_score",
+  "energy_score",
+  "cravings_score",
+  "training_completed",
+  "calories",
+  "notes",
+  "day_type"
+];
 
 function withMutationDetail(message: string, detail?: string | null) {
   return detail ? `${message} Details: ${detail}` : message;
+}
+
+function resolveRuntimeErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return fallback;
 }
 
 function resolveDailySaveStatus(result: DailyTrackingMutationResult): StatusState {
@@ -238,6 +274,80 @@ function buildDailyNutritionMutationPayload({
   };
 }
 
+function normalizeExistingTrainingSource(
+  existingTrainingCompleted: boolean,
+  existingTrainingSource: string | null
+) {
+  if (existingTrainingSource) {
+    return existingTrainingSource;
+  }
+
+  return existingTrainingCompleted ? "manual" : null;
+}
+
+function buildDailyTrainingMutationPayload({
+  currentTrainingCompleted,
+  existingTrainingCompleted,
+  existingTrainingSource
+}: {
+  currentTrainingCompleted: boolean;
+  existingTrainingCompleted: boolean;
+  existingTrainingSource: string | null;
+}) {
+  const normalizedExistingTrainingSource = normalizeExistingTrainingSource(
+    existingTrainingCompleted,
+    existingTrainingSource
+  );
+
+  if (normalizedExistingTrainingSource === "hevy") {
+    if (currentTrainingCompleted === existingTrainingCompleted) {
+      return {
+        training_completed: currentTrainingCompleted,
+        training_source: "hevy"
+      };
+    }
+
+    return {
+      training_completed: currentTrainingCompleted,
+      training_source: "manual"
+    };
+  }
+
+  if (normalizedExistingTrainingSource === "manual") {
+    return {
+      training_completed: currentTrainingCompleted,
+      training_source: "manual"
+    };
+  }
+
+  if (currentTrainingCompleted === existingTrainingCompleted) {
+    return {
+      training_completed: currentTrainingCompleted,
+      training_source: normalizedExistingTrainingSource
+    };
+  }
+
+  return {
+    training_completed: currentTrainingCompleted,
+    training_source: currentTrainingCompleted ? "manual" : null
+  };
+}
+
+function createPersistedEntryContext(entry: DailyEntryRow | null): PersistedEntryContext {
+  return {
+    bodyWeight: entry?.body_weight ?? null,
+    cravingsScore: entry?.cravings_score ?? null,
+    calories: entry?.calories ?? null,
+    dayType: entry?.day_type ?? null,
+    energyScore: entry?.energy_score ?? null,
+    nutritionSource: entry?.nutrition_source ?? null,
+    notes: entry?.notes ?? null,
+    sleepScore: entry?.sleep_score ?? null,
+    trainingCompleted: entry?.training_completed ?? false,
+    trainingSource: entry?.training_source ?? null
+  };
+}
+
 export function DailyTrackerForm(props: DailyTrackerFormProps) {
   const router = useRouter();
   const checklistTemplates = props.checklistTemplates;
@@ -246,20 +356,26 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
   const [form, setForm] = useState<FormState>(() => createInitialState(props));
   const [checklist, setChecklist] = useState<Record<string, boolean>>(() => buildChecklistState(props));
   const [status, setStatus] = useState<StatusState>({ tone: "muted", message: null });
-  const [loading, setLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
   const [syncingChecklistKey, setSyncingChecklistKey] = useState<string | null>(null);
   const [syncingSupplementTaskId, setSyncingSupplementTaskId] = useState<string | null>(null);
   const checklistStateRef = useRef<Record<string, boolean>>(buildChecklistState(props));
   const checklistRequestVersionRef = useRef<Record<string, number>>({});
   const supplementTaskRequestVersionRef = useRef<Record<string, number>>({});
   const checklistSyncQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingAutosaveResetRef = useRef<FormState | null>(null);
+  const touchedFieldsRef = useRef<Set<FormField>>(new Set());
+  const activeEntryDate = props.selectedDate;
 
   useEffect(() => {
     setSelectedDate(props.selectedDate);
-    setForm(createInitialState(props));
+    const nextFormState = createInitialState(props);
+    pendingAutosaveResetRef.current = nextFormState;
+    setForm(nextFormState);
     const nextChecklistState = buildChecklistState(props);
     checklistStateRef.current = nextChecklistState;
     setChecklist(nextChecklistState);
+    touchedFieldsRef.current = new Set();
     setActiveSection("metrics");
   }, [props]);
 
@@ -372,70 +488,207 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
     return run;
   }
 
-  async function saveEntry() {
+  function markFieldTouched(field: FormField) {
+    touchedFieldsRef.current.add(field);
+  }
+
+  function mergeTouchedFields(...extraFields: FormField[]) {
+    return new Set<FormField>([...touchedFieldsRef.current, ...extraFields]);
+  }
+
+  async function loadLatestEntryContext(userId: string, entryDate: string) {
+    const { supabase } = await getAuthenticatedClientContext();
+    const { data, error } = await supabase
+      .from("daily_entries")
+      .select(
+        "body_weight, sleep_score, energy_score, cravings_score, calories, notes, day_type, nutrition_source, training_completed, training_source"
+      )
+      .eq("user_id", userId)
+      .eq("entry_date", entryDate)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(
+        withMutationDetail("Neuester Daily-Eintrag konnte nicht geladen werden.", error.message)
+      );
+    }
+
+    return createPersistedEntryContext((data ?? null) as DailyEntryRow | null);
+  }
+
+  function buildEntryPayload({
+    entryDate,
+    formSnapshot,
+    latestEntryContext,
+    touchedFields,
+    userId
+  }: {
+    entryDate: string;
+    formSnapshot: FormState;
+    latestEntryContext: PersistedEntryContext;
+    touchedFields: ReadonlySet<FormField>;
+    userId: string;
+  }): DailyEntryInsert {
+    const bodyWeight = numberOrNull(formSnapshot.body_weight);
+    const notes = formSnapshot.notes || null;
+    const persistNutrition = touchedFields.has("calories");
+    const persistTraining = touchedFields.has("training_completed");
+
+    return {
+      body_weight: touchedFields.has("body_weight")
+        ? bodyWeight
+        : (latestEntryContext.bodyWeight ?? bodyWeight),
+      cravings_score: touchedFields.has("cravings_score")
+        ? formSnapshot.cravings_score
+        : (latestEntryContext.cravingsScore ?? formSnapshot.cravings_score),
+      day_type: touchedFields.has("day_type")
+        ? formSnapshot.day_type
+        : (latestEntryContext.dayType ?? formSnapshot.day_type),
+      energy_score: touchedFields.has("energy_score")
+        ? formSnapshot.energy_score
+        : (latestEntryContext.energyScore ?? formSnapshot.energy_score),
+      entry_date: entryDate,
+      notes: touchedFields.has("notes")
+        ? notes
+        : (latestEntryContext.notes ?? notes),
+      sleep_score: touchedFields.has("sleep_score")
+        ? formSnapshot.sleep_score
+        : (latestEntryContext.sleepScore ?? formSnapshot.sleep_score),
+      user_id: userId,
+      ...(persistTraining
+        ? buildDailyTrainingMutationPayload({
+            currentTrainingCompleted: formSnapshot.training_completed,
+            existingTrainingCompleted: latestEntryContext.trainingCompleted,
+            existingTrainingSource: latestEntryContext.trainingSource
+          })
+        : {}),
+      ...(persistNutrition
+        ? buildDailyNutritionMutationPayload({
+            currentCalories: numberOrNull(formSnapshot.calories),
+            existingCalories: latestEntryContext.calories,
+            existingNutritionSource: latestEntryContext.nutritionSource
+          })
+        : {})
+    };
+  }
+
+  function markPersistedFields(fields: ReadonlySet<FormField>) {
+    for (const field of fields) {
+      touchedFieldsRef.current.delete(field);
+    }
+  }
+
+  async function persistEntrySnapshot(formSnapshot: FormState) {
     if (isBrowserOffline()) {
-      setStatus({
-        tone: "warning",
-        message: getOfflineMessage("Bitte nach dem Reconnect erneut speichern.")
-      });
+      throw new Error(getOfflineMessage("Bitte nach dem Reconnect erneut speichern."));
+    }
+
+    await checklistSyncQueueRef.current;
+
+    const { supabase, userId } = await getAuthenticatedClientContext();
+
+    if (!userId) {
+      throw new Error("Session abgelaufen. Bitte erneut einloggen.");
+    }
+
+    const entryDate = activeEntryDate;
+    const latestEntryContext = await loadLatestEntryContext(userId, entryDate);
+    const touchedFields = mergeTouchedFields();
+    const entryPayload = buildEntryPayload({
+      entryDate,
+      formSnapshot,
+      latestEntryContext,
+      touchedFields,
+      userId
+    });
+    const mutationResult = await saveDailyEntryMutation({
+      entry: entryPayload,
+      supabase
+    });
+
+    if (!mutationResult.saved) {
+      throw new Error(withMutationDetail("Tages-Tracking konnte nicht gespeichert werden.", mutationResult.error));
+    }
+
+    markPersistedFields(touchedFields);
+    notifyAppDataMutation();
+  }
+
+  const autosave = useAutosave<FormState>({
+    debounceMs: 900,
+    enabled: !actionLoading,
+    onSave: persistEntrySnapshot,
+    resetKey: `${activeEntryDate}:${props.entry?.id ?? "new"}`,
+    value: form
+  });
+
+  useEffect(() => {
+    if (!pendingAutosaveResetRef.current) {
       return;
     }
 
-    setLoading(true);
+    autosave.markSaved(pendingAutosaveResetRef.current);
+    pendingAutosaveResetRef.current = null;
+  }, [autosave, activeEntryDate, props.entry?.id]);
+
+  async function saveEntryNow() {
+    setActionLoading(true);
     setStatus({ tone: "muted", message: null });
 
     try {
+      if (isBrowserOffline()) {
+        throw new Error(getOfflineMessage("Bitte nach dem Reconnect erneut speichern."));
+      }
+
       await checklistSyncQueueRef.current;
 
       const { supabase, userId } = await getAuthenticatedClientContext();
 
       if (!userId) {
-        setStatus({ tone: "danger", message: "Session abgelaufen. Bitte erneut einloggen." });
-        return;
+        throw new Error("Session abgelaufen. Bitte erneut einloggen.");
       }
 
+      const entryDate = activeEntryDate;
+      const formSnapshot = form;
+      const checklistSnapshot = { ...checklistStateRef.current };
+      const latestEntryContext = await loadLatestEntryContext(userId, entryDate);
+      const touchedFields = mergeTouchedFields();
+      const entryPayload = buildEntryPayload({
+        entryDate,
+        formSnapshot,
+        latestEntryContext,
+        touchedFields,
+        userId
+      });
       const mutationResult = await saveDailyTrackingMutation({
-        checklistState: checklistStateRef.current,
+        checklistState: checklistSnapshot,
         checklistTemplates: props.checklistTemplates,
-        entry: {
-          body_weight: numberOrNull(form.body_weight),
-          cravings_score: form.cravings_score,
-          day_type: form.day_type,
-          energy_score: form.energy_score,
-          entry_date: selectedDate,
-          notes: form.notes || null,
-          sleep_score: form.sleep_score,
-          training_completed: form.training_completed,
-          user_id: userId,
-          ...buildDailyNutritionMutationPayload({
-            currentCalories: numberOrNull(form.calories),
-            existingCalories: props.entry?.calories ?? null,
-            existingNutritionSource: props.entry?.nutrition_source ?? null
-          })
-        },
-        entryDate: selectedDate,
+        entry: entryPayload,
+        entryDate,
         supplementLogMeta: props.supplementLogMeta,
         supabase,
         userId
       });
 
-      setStatus(resolveDailySaveStatus(mutationResult));
-
-      if (mutationResult.status !== "failed") {
+      if (mutationResult.entrySaved) {
+        markPersistedFields(touchedFields);
+        autosave.markSaved(formSnapshot);
         notifyAppDataMutation();
       }
-    } catch {
+
+      setStatus(resolveDailySaveStatus(mutationResult));
+    } catch (error) {
       setStatus({
         tone: "danger",
-        message: "Speichern fehlgeschlagen. Bitte versuche es erneut."
+        message: resolveRuntimeErrorMessage(error, "Tages-Tracking konnte nicht gespeichert werden.")
       });
     } finally {
-      setLoading(false);
+      setActionLoading(false);
     }
   }
 
   async function persistChecklistToggle(templateKey: string, checked: boolean) {
-    if (loading) {
+    if (actionLoading) {
       setStatus({
         tone: "warning",
         message: "Daily-Save läuft bereits. Bitte kurz warten."
@@ -487,7 +740,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
           checked,
           checklistState: checklistStateRef.current,
           checklistTemplates: props.checklistTemplates,
-          entryDate: selectedDate,
+          entryDate: activeEntryDate,
           supplementLogMeta: props.supplementLogMeta,
           supabase,
           templateKey,
@@ -524,7 +777,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
   }
 
   async function persistSupplementTaskToggle(taskId: string, checked: boolean) {
-    if (loading) {
+    if (actionLoading) {
       setStatus({
         tone: "warning",
         message: "Daily-Save läuft bereits. Bitte kurz warten."
@@ -593,7 +846,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
           checked,
           checklistState: checklistStateRef.current,
           checklistTemplates: props.checklistTemplates,
-          entryDate: selectedDate,
+          entryDate: activeEntryDate,
           supplementLogMeta: props.supplementLogMeta,
           supabase,
           templateKeys: supplementTask.templateKeys,
@@ -630,7 +883,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
   }
 
   async function copyPreviousDay() {
-    setLoading(true);
+    setActionLoading(true);
     setStatus({ tone: "muted", message: null });
 
     try {
@@ -641,7 +894,8 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         return;
       }
 
-      const previousDate = shiftDateKey(selectedDate, -1);
+      const entryDate = activeEntryDate;
+      const previousDate = shiftDateKey(entryDate, -1);
 
       const [{ data: entryData }, { data: checklistRowsData }] = await Promise.all([
         supabase
@@ -665,7 +919,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         return;
       }
 
-      setForm({
+      const copiedForm: FormState = {
         body_weight: previousEntry.body_weight?.toString() ?? "",
         sleep_score: previousEntry.sleep_score ?? 7,
         energy_score: previousEntry.energy_score ?? 7,
@@ -674,34 +928,67 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         calories: previousEntry.calories?.toString() ?? "",
         notes: previousEntry.notes ?? "",
         day_type: previousEntry.day_type
-      });
-
-      updateChecklistState(
-        Object.fromEntries(
-          props.checklistTemplates.map((template) => [
-            template.template_key,
-            previousChecklistRows.find((item) => item.template_key === template.template_key)
-              ?.completed ?? false
-          ])
-        )
+      };
+      const copiedChecklist = Object.fromEntries(
+        props.checklistTemplates.map((template) => [
+          template.template_key,
+          previousChecklistRows.find((item) => item.template_key === template.template_key)
+            ?.completed ?? false
+        ])
       );
-
-      setActiveSection("metrics");
-      setStatus({
-        tone: "success",
-        message: "Werte und Checklisten vom Vortag übernommen. Speichern nicht vergessen."
+      const latestEntryContext = await loadLatestEntryContext(userId, entryDate);
+      const touchedFields = new Set<FormField>(ALL_FORM_FIELDS);
+      const entryPayload = buildEntryPayload({
+        entryDate,
+        formSnapshot: copiedForm,
+        latestEntryContext,
+        touchedFields,
+        userId
       });
-    } catch {
+      const mutationResult = await saveDailyTrackingMutation({
+        checklistState: copiedChecklist,
+        checklistTemplates: props.checklistTemplates,
+        entry: entryPayload,
+        entryDate,
+        supplementLogMeta: props.supplementLogMeta,
+        supabase,
+        userId
+      });
+
+      if (mutationResult.entrySaved) {
+        markPersistedFields(touchedFields);
+        setForm(copiedForm);
+        autosave.markSaved(copiedForm);
+        notifyAppDataMutation();
+      }
+
+      if (mutationResult.checklistSaved) {
+        updateChecklistState(copiedChecklist);
+      }
+
+      if (mutationResult.entrySaved || mutationResult.checklistSaved) {
+        setActiveSection("metrics");
+      }
+
+      setStatus(
+        mutationResult.status === "success"
+          ? {
+              tone: "success",
+              message: "Werte und Checklisten vom Vortag übernommen."
+            }
+          : resolveDailySaveStatus(mutationResult)
+      );
+    } catch (error) {
       setStatus({
         tone: "danger",
-        message: "Vortag konnte nicht geladen werden."
+        message: resolveRuntimeErrorMessage(error, "Vortag konnte nicht geladen werden.")
       });
     } finally {
-      setLoading(false);
+      setActionLoading(false);
     }
   }
 
-  function applyTemplate() {
+  async function applyTemplate() {
     const matchingTemplate = resolveTemplateForDayType(props, form.day_type);
 
     if (!matchingTemplate) {
@@ -709,23 +996,86 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
       return;
     }
 
-    setForm((current) => ({
-      ...current,
-      calories: matchingTemplate.calories?.toString() ?? current.calories,
-      notes: matchingTemplate.notes ?? current.notes,
-      day_type: matchingTemplate.day_type,
-      training_completed: false
-    }));
+    setActionLoading(true);
+    setStatus({ tone: "muted", message: null });
 
-    updateChecklistState(
-      Object.fromEntries(props.checklistTemplates.map((template) => [template.template_key, false]))
-    );
-    setActiveSection("metrics");
+    try {
+      if (isBrowserOffline()) {
+        throw new Error(getOfflineMessage("Bitte nach dem Reconnect erneut speichern."));
+      }
 
-    setStatus({
-      tone: "success",
-      message: `Vorlage "${matchingTemplate.title}" geladen.`
-    });
+      await checklistSyncQueueRef.current;
+
+      const { supabase, userId } = await getAuthenticatedClientContext();
+
+      if (!userId) {
+        throw new Error("Session abgelaufen. Bitte erneut einloggen.");
+      }
+
+      const entryDate = activeEntryDate;
+      const nextForm: FormState = {
+        ...form,
+        calories:
+          form.calories.trim().length > 0
+            ? form.calories
+            : matchingTemplate.calories?.toString() ?? form.calories,
+        notes: matchingTemplate.notes ?? form.notes,
+        day_type: matchingTemplate.day_type,
+        training_completed: form.training_completed
+      };
+      const nextChecklist = Object.fromEntries(
+        props.checklistTemplates.map((template) => [template.template_key, false])
+      );
+      const latestEntryContext = await loadLatestEntryContext(userId, entryDate);
+      const touchedFields = mergeTouchedFields("day_type", "notes");
+      const entryPayload = buildEntryPayload({
+        entryDate,
+        formSnapshot: nextForm,
+        latestEntryContext,
+        touchedFields,
+        userId
+      });
+      const mutationResult = await saveDailyTrackingMutation({
+        checklistState: nextChecklist,
+        checklistTemplates: props.checklistTemplates,
+        entry: entryPayload,
+        entryDate,
+        supplementLogMeta: props.supplementLogMeta,
+        supabase,
+        userId
+      });
+
+      if (mutationResult.entrySaved) {
+        markPersistedFields(touchedFields);
+        setForm(nextForm);
+        autosave.markSaved(nextForm);
+        notifyAppDataMutation();
+      }
+
+      if (mutationResult.checklistSaved) {
+        updateChecklistState(nextChecklist);
+      }
+
+      if (mutationResult.entrySaved || mutationResult.checklistSaved) {
+        setActiveSection("metrics");
+      }
+
+      setStatus(
+        mutationResult.status === "success"
+          ? {
+              tone: "success",
+              message: `Vorlage "${matchingTemplate.title}" geladen.`
+            }
+          : resolveDailySaveStatus(mutationResult)
+      );
+    } catch (error) {
+      setStatus({
+        tone: "danger",
+        message: resolveRuntimeErrorMessage(error, "Vorlage konnte nicht geladen werden.")
+      });
+    } finally {
+      setActionLoading(false);
+    }
   }
 
   const todayDate = toDateInputValue(new Date(), props.timezone);
@@ -766,11 +1116,21 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         </div>
 
         <div className="grid min-w-0 max-w-full gap-3 md:grid-cols-3">
-          <Button variant="secondary" onClick={applyTemplate} className="w-full max-w-full">
+          <Button
+            variant="secondary"
+            onClick={() => void applyTemplate()}
+            disabled={actionLoading}
+            className="w-full max-w-full"
+          >
             <ClipboardPaste className="mr-2 h-4 w-4" />
             Vorlage
           </Button>
-          <Button variant="secondary" onClick={copyPreviousDay} disabled={loading} className="w-full max-w-full">
+          <Button
+            variant="secondary"
+            onClick={copyPreviousDay}
+            disabled={actionLoading}
+            className="w-full max-w-full"
+          >
             <Copy className="mr-2 h-4 w-4" />
             Vortag
           </Button>
@@ -800,8 +1160,15 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
         onToggleSupplementTask={(taskId, checked) =>
           void persistSupplementTaskToggle(taskId, checked)
         }
-        selectedDate={selectedDate}
+        selectedDate={activeEntryDate}
         supplementTaskStates={supplementTodoTaskStates}
+        syncedTaskIds={props.syncedTodoTaskIds}
+        timezone={props.timezone}
+      />
+
+      <DailySyncOverview
+        dailyNutrition={props.dailyNutrition}
+        dailyTraining={props.dailyTraining}
         timezone={props.timezone}
       />
 
@@ -811,52 +1178,83 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
           title="Hevy Import"
           description={null}
           hint={null}
-          onCompleted={() => router.refresh()}
         />
       </CollapsibleSection>
 
       <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
         <div className={cn(activeSection === "metrics" ? "block" : "hidden", "xl:block")}>
           <DailyMetricsPanel
+            actionLoading={actionLoading}
             bodyWeight={form.body_weight}
             calories={form.calories}
             cravingsScore={form.cravings_score}
             dayType={form.day_type}
             energyScore={form.energy_score}
-            loading={loading}
             notes={form.notes}
             onBodyWeightChange={(value) =>
-              setForm((current) => ({ ...current, body_weight: value }))
+              setForm((current) => {
+                markFieldTouched("body_weight");
+                return { ...current, body_weight: value };
+              })
             }
+            onBlurSave={() => {
+              void autosave.flush();
+            }}
             onCaloriesChange={(value) =>
-              setForm((current) => ({ ...current, calories: value }))
+              setForm((current) => {
+                markFieldTouched("calories");
+                return { ...current, calories: value };
+              })
             }
             onCravingsScoreChange={(value) =>
-              setForm((current) => ({ ...current, cravings_score: value }))
+              setForm((current) => {
+                markFieldTouched("cravings_score");
+                return { ...current, cravings_score: value };
+              })
             }
             onDayTypeChange={(value) =>
-              setForm((current) => ({
-                ...current,
-                day_type: value
-              }))
+              setForm((current) => {
+                markFieldTouched("day_type");
+                return {
+                  ...current,
+                  day_type: value
+                };
+              })
             }
             onEnergyScoreChange={(value) =>
-              setForm((current) => ({ ...current, energy_score: value }))
+              setForm((current) => {
+                markFieldTouched("energy_score");
+                return { ...current, energy_score: value };
+              })
             }
             onNotesChange={(value) =>
-              setForm((current) => ({ ...current, notes: value }))
+              setForm((current) => {
+                markFieldTouched("notes");
+                return { ...current, notes: value };
+              })
             }
-            onSave={() => void saveEntry()}
+            onSave={() => void saveEntryNow()}
             onShowChecklists={() => setActiveSection("checklists")}
             onSleepScoreChange={(value) =>
-              setForm((current) => ({ ...current, sleep_score: value }))
+              setForm((current) => {
+                markFieldTouched("sleep_score");
+                return { ...current, sleep_score: value };
+              })
             }
             onTrainingCompletedChange={(value) =>
-              setForm((current) => ({ ...current, training_completed: value }))
+              setForm((current) => {
+                markFieldTouched("training_completed");
+                return { ...current, training_completed: value };
+              })
             }
+            nutritionSourceStatus={props.dailyNutrition.sourceStatus}
+            saveDirty={autosave.isDirty}
+            saveErrorMessage={autosave.errorMessage}
+            saveStatus={autosave.status}
             showChecklistShortcut
             sleepScore={form.sleep_score}
             trainingCompleted={form.training_completed}
+            trainingSourceStatus={props.dailyTraining.sourceStatus}
           />
         </div>
 

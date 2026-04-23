@@ -3,6 +3,7 @@
 import { Check } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { getDailyTodoItems, toDailyTodoMinutes, type DailyTodoItem } from "@/lib/daily-todos";
 import { cn, toDateInputValue } from "@/lib/utils";
 
@@ -48,18 +49,20 @@ function TodoRow({
   checked,
   item,
   onToggle,
-  pending = false
+  pending = false,
+  synced = false
 }: {
   checked: boolean;
   item: DailyTodoItem;
   onToggle: () => void;
   pending?: boolean;
+  synced?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onToggle}
-      disabled={pending}
+      disabled={pending || synced}
       className={cn(
         "grid min-w-0 w-full max-w-full grid-cols-[4.25rem_minmax(0,1fr)_2rem] items-center gap-3 rounded-2xl border border-border px-4 py-3 text-left transition hover:border-primary/40 hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-70",
         checked && "border-primary/30 bg-primary/10"
@@ -75,7 +78,10 @@ function TodoRow({
           checked && "text-muted-foreground line-through decoration-muted-foreground/70"
         )}
       >
-        {item.title}
+        <span className="flex flex-wrap items-center gap-2">
+          <span>{item.title}</span>
+          {synced ? <Badge tone="success">Sync</Badge> : null}
+        </span>
       </span>
       <span
         className={cn(
@@ -93,6 +99,7 @@ export function DailyTodoList({
   dayType,
   selectedDate,
   supplementTaskStates = {},
+  syncedTaskIds = [],
   onToggleSupplementTask,
   timezone
 }: {
@@ -100,6 +107,7 @@ export function DailyTodoList({
   onToggleSupplementTask?: (taskId: string, checked: boolean) => void;
   selectedDate: string;
   supplementTaskStates?: Record<string, { checked: boolean; count: number; pending?: boolean }>;
+  syncedTaskIds?: string[];
   timezone?: string | null;
 }) {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
@@ -174,8 +182,14 @@ export function DailyTodoList({
 
   const sortedTasks = useMemo(() => {
     return [...tasks].sort((left, right) => {
-      const leftChecked = supplementTaskStates[left.id]?.checked ?? checkedIds.includes(left.id);
-      const rightChecked = supplementTaskStates[right.id]?.checked ?? checkedIds.includes(right.id);
+      const leftChecked =
+        syncedTaskIds.includes(left.id) ||
+        supplementTaskStates[left.id]?.checked ||
+        checkedIds.includes(left.id);
+      const rightChecked =
+        syncedTaskIds.includes(right.id) ||
+        supplementTaskStates[right.id]?.checked ||
+        checkedIds.includes(right.id);
 
       if (leftChecked !== rightChecked) {
         return leftChecked ? 1 : -1;
@@ -192,9 +206,13 @@ export function DailyTodoList({
 
       return left.time.localeCompare(right.time);
     });
-  }, [checkedIds, currentMinutes, supplementTaskStates, tasks]);
+  }, [checkedIds, currentMinutes, supplementTaskStates, syncedTaskIds, tasks]);
 
   function handleToggle(taskId: string) {
+    if (syncedTaskIds.includes(taskId)) {
+      return;
+    }
+
     const supplementTaskState = supplementTaskStates[taskId];
 
     if (supplementTaskState && onToggleSupplementTask) {
@@ -226,9 +244,14 @@ export function DailyTodoList({
         {sortedTasks.map((task) => (
           <TodoRow
             key={task.id}
-            checked={supplementTaskStates[task.id]?.checked ?? checkedIds.includes(task.id)}
+            checked={
+              syncedTaskIds.includes(task.id) ||
+              supplementTaskStates[task.id]?.checked ||
+              checkedIds.includes(task.id)
+            }
             item={task}
             pending={supplementTaskStates[task.id]?.pending}
+            synced={syncedTaskIds.includes(task.id)}
             onToggle={() => handleToggle(task.id)}
           />
         ))}

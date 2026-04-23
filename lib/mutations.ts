@@ -46,6 +46,11 @@ export type DailyTrackingMutationResult = {
   supplementLogsSaved: boolean;
 };
 
+export type DailyEntryMutationResult = {
+  error: string | null;
+  saved: boolean;
+};
+
 export type DailyChecklistItemMutationResult = {
   checklistError: string | null;
   checklistSaved: boolean;
@@ -197,6 +202,25 @@ export async function saveDailyTrackingMutation({
     status: supplementLogResult.error ? "partial" : "success",
     supplementLogError: supplementLogResult.error,
     supplementLogsSaved: !supplementLogResult.error
+  };
+}
+
+export async function saveDailyEntryMutation({
+  entry,
+  supabase
+}: {
+  entry: DailyEntryInsert;
+  supabase: TypedSupabase;
+}): Promise<DailyEntryMutationResult> {
+  const dailyEntriesTable =
+    supabase.from("daily_entries") as unknown as UpsertableTable<DailyEntryInsert>;
+  const { error } = await dailyEntriesTable.upsert(entry, {
+    onConflict: "user_id,entry_date"
+  });
+
+  return {
+    error: getErrorMessage(error),
+    saved: !error
   };
 }
 

@@ -14,7 +14,7 @@ import {
   getTrackedSupplementIds
 } from "@/lib/supplement-tracking";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import type { TableRow } from "@/types/supabase";
+import type { Json, TableRow } from "@/types/supabase";
 import {
   average,
   daysSince,
@@ -41,8 +41,11 @@ type MealTemplate = TableRow<"meal_templates">;
 type DayTemplate = TableRow<"day_templates">;
 type UserSettings = TableRow<"user_settings">;
 type Profile = TableRow<"profiles">;
+type SourceNutritionEntry = TableRow<"source_nutrition_entries">;
+type SourceWorkout = TableRow<"source_workouts">;
 type SupplementCatalogSummary = Pick<SupplementCatalog, "id" | "slug" | "is_default_active">;
 type UserSupplementStatus = Pick<UserSupplement, "supplement_id" | "active">;
+type DailySourceStatus = "manual" | "missing" | "synced";
 
 export type AppShellData = {
   profile: Profile | null;
@@ -84,6 +87,45 @@ export type DashboardData = {
 };
 
 export type DailyPageData = {
+  dailyNutrition: {
+    entries: Array<{
+      calories: number | null;
+      carbsG: number | null;
+      fatG: number | null;
+      foodName: string;
+      id: string;
+      mealType: string;
+      proteinG: number | null;
+    }>;
+    sourceStatus: DailySourceStatus;
+    totals: {
+      calories: number | null;
+      carbsG: number | null;
+      fatG: number | null;
+      proteinG: number | null;
+    };
+  };
+  dailyTraining: {
+    completed: boolean;
+    sourceStatus: DailySourceStatus;
+    summary: {
+      isBestEffort: boolean;
+      totalDurationMinutes: number;
+      totalExerciseCount: number;
+      totalVolumeKg: number | null;
+      workoutCount: number;
+    };
+    workouts: Array<{
+      durationMinutes: number | null;
+      exerciseCount: number;
+      hasStructuredSummary: boolean;
+      id: string;
+      providerWorkoutId: string;
+      startedAt: string | null;
+      title: string;
+      totalVolumeKg: number | null;
+    }>;
+  };
   selectedDate: string;
   timezone: string | null;
   entry: DailyEntry | null;
@@ -96,6 +138,7 @@ export type DailyPageData = {
     id: string;
     slug: string;
   }>;
+  syncedTodoTaskIds: string[];
 };
 
 export type SupplementsPageData = {
@@ -433,6 +476,8 @@ export async function getDailyPageData(
     { data: checklistStates },
     { data: dayTemplates },
     { data: settings },
+    { data: sourceNutritionEntries },
+    { data: sourceWorkouts },
     { data: supplementCatalog },
     { data: userSupplements }
   ] =
@@ -451,15 +496,38 @@ export async function getDailyPageData(
         .eq("entry_date", effectiveSelectedDate),
       supabase.from("day_templates").select("*").order("title", { ascending: true }),
       supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle(),
-    supabase.from("supplement_catalog").select("id, slug, is_default_active"),
-    supabase.from("user_supplements").select("supplement_id, active").eq("user_id", userId)
+      supabase
+        .from("source_nutrition_entries")
+        .select("id, meal_type, food_name, calories, protein_g, carbs_g, fat_g")
+        .eq("user_id", userId)
+        .eq("provider", "fatsecret")
+        .eq("entry_date", effectiveSelectedDate)
+        .order("meal_type", { ascending: true })
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("source_workouts")
+        .select("id, provider_workout_id, started_at, duration_minutes, title, raw_payload")
+        .eq("user_id", userId)
+        .eq("provider", "hevy")
+        .eq("workout_date", effectiveSelectedDate)
+        .order("started_at", { ascending: true }),
+      supabase.from("supplement_catalog").select("id, slug, is_default_active"),
+      supabase.from("user_supplements").select("supplement_id, active").eq("user_id", userId)
     ]);
 
-  const entryRow: DailyEntry | null = entry ?? null;
+  const entryRow = (entry ?? null) as DailyEntry | null;
   const checklistTemplateRows: ChecklistTemplate[] = checklistTemplates ?? [];
   const checklistStateRows: DailyChecklist[] = checklistStates ?? [];
   const dayTemplateRows: DayTemplate[] = dayTemplates ?? [];
   const settingsRow: UserSettings | null = settings ?? null;
+  const sourceNutritionEntryRows: Pick<
+    SourceNutritionEntry,
+    "id" | "meal_type" | "food_name" | "calories" | "protein_g" | "carbs_g" | "fat_g"
+  >[] = sourceNutritionEntries ?? [];
+  const sourceWorkoutRows: Pick<
+    SourceWorkout,
+    "id" | "provider_workout_id" | "started_at" | "duration_minutes" | "title" | "raw_payload"
+  >[] = sourceWorkouts ?? [];
   const supplementCatalogRows: SupplementCatalogSummary[] = supplementCatalog ?? [];
   const userSupplementRows: UserSupplementStatus[] = userSupplements ?? [];
   const supplementLogMeta = buildSupplementLogMeta(supplementCatalogRows, userSupplementRows);
@@ -470,8 +538,71 @@ export async function getDailyPageData(
   const visibleChecklistTemplateKeys = new Set(
     visibleChecklistTemplateRows.map((template) => template.template_key)
   );
+  const dailyNutrition = {
+    entries: sourceNutritionEntryRows.map((entry) => ({
+      calories: entry.calories,
+      carbsG: entry.carbs_g,
+      fatG: entry.fat_g,
+      foodName: entry.food_name,
+      id: entry.id,
+      mealType: entry.meal_type,
+      proteinG: entry.protein_g
+    })),
+    sourceStatus: resolveNutritionSourceStatus(entryRow, sourceNutritionEntryRows.length > 0),
+    totals: {
+      calories: entryRow?.calories ?? null,
+      carbsG: entryRow?.carbs_g ?? null,
+      fatG: entryRow?.fat_g ?? null,
+      proteinG: entryRow?.protein_g ?? null
+    }
+  };
+  const dailyTrainingWorkouts = sourceWorkoutRows.map((workout) => {
+    const summary = summarizeWorkoutRawPayload(workout.raw_payload);
+
+    return {
+      durationMinutes: workout.duration_minutes,
+      exerciseCount: summary.exerciseCount,
+      hasStructuredSummary: summary.hasStructuredSummary,
+      id: workout.id,
+      providerWorkoutId: workout.provider_workout_id,
+      startedAt: workout.started_at,
+      title: workout.title ?? "Hevy Workout",
+      totalVolumeKg: summary.totalVolumeKg
+    };
+  });
+  const dailyTraining = {
+    completed: entryRow?.training_completed ?? dailyTrainingWorkouts.length > 0,
+    sourceStatus: resolveTrainingSourceStatus(entryRow, dailyTrainingWorkouts.length > 0),
+    summary: {
+      isBestEffort: dailyTrainingWorkouts.some((workout) => !workout.hasStructuredSummary),
+      totalDurationMinutes: dailyTrainingWorkouts.reduce(
+        (sum, workout) => sum + (workout.durationMinutes ?? 0),
+        0
+      ),
+      totalExerciseCount: dailyTrainingWorkouts.reduce(
+        (sum, workout) => sum + workout.exerciseCount,
+        0
+      ),
+      totalVolumeKg: roundToSingleNullableNumber(
+        dailyTrainingWorkouts.reduce((sum, workout) => sum + (workout.totalVolumeKg ?? 0), 0),
+        dailyTrainingWorkouts.some((workout) => workout.totalVolumeKg !== null)
+      ),
+      workoutCount: dailyTrainingWorkouts.length
+    },
+    workouts: dailyTrainingWorkouts
+  };
+  const syncedTodoTaskIds = Array.from(
+    new Set([
+      ...sourceNutritionEntryRows.flatMap((entry) =>
+        mapFatSecretMealTypeToTodoTaskIds(entry.meal_type)
+      ),
+      ...(dailyTrainingWorkouts.length ? ["training"] : [])
+    ])
+  );
 
   return {
+    dailyNutrition,
+    dailyTraining,
     selectedDate: effectiveSelectedDate,
     timezone,
     entry: entryRow,
@@ -481,7 +612,8 @@ export async function getDailyPageData(
     ),
     dayTemplates: dayTemplateRows,
     settings: settingsRow,
-    supplementLogMeta
+    supplementLogMeta,
+    syncedTodoTaskIds
   };
 }
 
@@ -994,4 +1126,138 @@ function buildSupplementLogMeta(
     id: supplement.id,
     slug: supplement.slug
   }));
+}
+
+function isJsonRecord(value: Json | undefined): value is Record<string, Json | undefined> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseLooseNumber(value: Json | undefined) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const compactValue = value.trim();
+
+  if (!compactValue) {
+    return null;
+  }
+
+  const parsedValue = Number(compactValue.replace(",", "."));
+  return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function summarizeWorkoutRawPayload(rawPayload: Json) {
+  if (!isJsonRecord(rawPayload) || !Array.isArray(rawPayload.rows)) {
+    return {
+      exerciseCount: 0,
+      hasStructuredSummary: false,
+      totalVolumeKg: null
+    };
+  }
+
+  const exerciseTitles = new Set<string>();
+  let totalVolumeKg = 0;
+  let hasVolume = false;
+
+  for (const row of rawPayload.rows) {
+    if (!isJsonRecord(row)) {
+      continue;
+    }
+
+    const exerciseTitle =
+      typeof row.exercise_title === "string" && row.exercise_title.trim()
+        ? row.exercise_title.trim()
+        : null;
+
+    if (exerciseTitle) {
+      exerciseTitles.add(exerciseTitle);
+    }
+
+    const reps = parseLooseNumber(row.reps);
+    const weightKg = parseLooseNumber(row.weight_kg);
+
+    if (reps !== null && reps > 0 && weightKg !== null && weightKg > 0) {
+      totalVolumeKg += reps * weightKg;
+      hasVolume = true;
+    }
+  }
+
+  return {
+    exerciseCount: exerciseTitles.size,
+    hasStructuredSummary: true,
+    totalVolumeKg: roundToSingleNullableNumber(totalVolumeKg, hasVolume)
+  };
+}
+
+function roundToSingleNullableNumber(value: number, enabled: boolean) {
+  if (!enabled) {
+    return null;
+  }
+
+  return Number(value.toFixed(1));
+}
+
+function resolveNutritionSourceStatus(
+  entry: DailyEntry | null,
+  hasSyncedMeals: boolean
+): DailySourceStatus {
+  if (entry?.nutrition_source === "manual") {
+    return "manual";
+  }
+
+  if (entry?.nutrition_source === "fatsecret") {
+    return "synced";
+  }
+
+  if (hasSyncedMeals) {
+    return "synced";
+  }
+
+  if (
+    (entry?.calories !== null && entry?.calories !== undefined) ||
+    (entry?.protein_g !== null && entry?.protein_g !== undefined) ||
+    (entry?.carbs_g !== null && entry?.carbs_g !== undefined) ||
+    (entry?.fat_g !== null && entry?.fat_g !== undefined)
+  ) {
+    return "manual";
+  }
+
+  return "missing";
+}
+
+function resolveTrainingSourceStatus(
+  entry: DailyEntry | null,
+  hasSyncedWorkout: boolean
+): DailySourceStatus {
+  if (entry?.training_source === "hevy") {
+    return "synced";
+  }
+
+  if (entry?.training_source === "manual" || entry?.training_completed) {
+    return "manual";
+  }
+
+  if (hasSyncedWorkout) {
+    return "synced";
+  }
+
+  return "missing";
+}
+
+function mapFatSecretMealTypeToTodoTaskIds(mealType: string) {
+  switch (mealType) {
+    case "breakfast":
+      return ["breakfast"];
+    case "lunch":
+      return ["lunch"];
+    case "dinner":
+      return ["dinner"];
+    default:
+      return [];
+  }
 }
