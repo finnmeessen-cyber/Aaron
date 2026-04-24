@@ -1105,11 +1105,11 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
     <div className="min-w-0 max-w-full space-y-4">
       <Card className="min-w-0 max-w-full space-y-4">
         <div className="flex min-w-0 max-w-full flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div>
+          <div className="min-w-0">
             <CardTitle>Jetzt loggen</CardTitle>
             <CardDescription className="mt-1">Werte und Checklisten.</CardDescription>
           </div>
-          <div className="grid min-w-0 w-full max-w-full gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)] xl:max-w-[34rem]">
+          <div className="grid min-w-0 w-full max-w-full grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)] xl:max-w-[34rem]">
             <Button
               className="w-full max-w-full"
               variant={selectedDate === todayDate ? "primary" : "secondary"}
@@ -1141,7 +1141,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
           </div>
         </div>
 
-        <div className="grid min-w-0 max-w-full gap-3 md:grid-cols-3">
+        <div className="grid min-w-0 max-w-full grid-cols-1 gap-3 md:grid-cols-3">
           <Button
             variant="secondary"
             onClick={() => void applyTemplate()}
@@ -1160,7 +1160,7 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
             <Copy className="mr-2 h-4 w-4" />
             Vortag
           </Button>
-          <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 xl:hidden">
+          <div className="grid min-w-0 max-w-full grid-cols-1 gap-3 sm:grid-cols-2 xl:hidden">
             <Button
               className="w-full max-w-full"
               variant={activeSection === "metrics" ? "primary" : "secondary"}
