@@ -2,8 +2,9 @@ import type { Route } from "next";
 import type { LucideIcon } from "lucide-react";
 import {
   CalendarCheck2,
+  Dumbbell,
   Gauge,
-  Leaf,
+  Moon,
   Pill,
   Salad,
   Settings2,
@@ -57,8 +58,9 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: Gauge },
   { href: "/daily", label: "Daily", icon: CalendarCheck2 },
   { href: "/supplements", label: "Supps", icon: Pill },
-  { href: "/nutrition", label: "Meals", icon: Salad },
-  { href: "/phases", label: "Phasen", icon: Leaf },
+  { href: "/meals", label: "Meals", icon: Salad },
+  { href: "/training", label: "Training", icon: Dumbbell },
+  { href: "/sleep", label: "Sleep", icon: Moon },
   WEEKLY_NAV_ITEM,
   { href: "/settings", label: "Settings", icon: Settings2 }
 ];

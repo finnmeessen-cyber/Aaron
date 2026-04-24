@@ -14,10 +14,14 @@ const AUTH_REDIRECT_ROUTES = [
   "/dashboard",
   "/daily",
   "/supplements",
+  "/meals",
+  "/training",
+  "/sleep",
   "/nutrition",
   "/phases",
   "/weekly-review",
-  "/settings"
+  "/settings",
+  "/settings/phases"
 ] as const satisfies readonly Route[];
 
 function isAuthRedirectRoute(value: string): value is (typeof AUTH_REDIRECT_ROUTES)[number] {

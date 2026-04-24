@@ -16,7 +16,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const DEFAULT_REDIRECT_PATH = "/nutrition";
+const DEFAULT_REDIRECT_PATH = "/meals";
 
 async function authenticateUser() {
   const supabase = createServerSupabaseClient();

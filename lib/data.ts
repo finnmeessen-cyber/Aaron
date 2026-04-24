@@ -1346,7 +1346,7 @@ function buildDashboardNextActions({
     actions.push({
       ctaLabel: "Phase wählen",
       description: "Ohne aktive Phase fehlen Kontext und Framing im Dashboard und im App-Shell-Header.",
-      href: "/phases" as Route,
+      href: "/settings/phases" as Route,
       title: "Phase festlegen"
     });
   }
