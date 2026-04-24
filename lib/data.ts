@@ -46,6 +46,7 @@ type SourceWorkout = TableRow<"source_workouts">;
 type SupplementCatalogSummary = Pick<SupplementCatalog, "id" | "slug" | "is_default_active">;
 type UserSupplementStatus = Pick<UserSupplement, "supplement_id" | "active">;
 type DailySourceStatus = "manual" | "missing" | "synced";
+export type WeeklySourceKind = "manual" | "synced" | "derived" | "mixed" | "none";
 
 export type AppShellData = {
   profile: Profile | null;
@@ -225,6 +226,74 @@ export type ReviewPageData = {
     sleepAverage: number | null;
     trackedDays: number;
     trainingDays: number;
+  };
+};
+
+export type WeeklyDayNutrition = {
+  date: string;
+  calories: number | null;
+  protein: number | null;
+  carbs: number | null;
+  fat: number | null;
+  source: WeeklySourceKind;
+};
+
+export type WeeklyTrainingDay = {
+  date: string;
+  workoutsCompleted: number;
+  durationMinutes: number | null;
+  volumeKg: number | null;
+  active: boolean;
+  source: WeeklySourceKind;
+  bestEffort?: boolean;
+};
+
+export type WeeklySleepDay = {
+  date: string;
+  sleepMinutes: number | null;
+  source: WeeklySourceKind;
+};
+
+export type WeeklyOverview = {
+  range: {
+    start: string;
+    end: string;
+  };
+  nutrition: {
+    days: WeeklyDayNutrition[];
+    totals: {
+      calories: number;
+      protein: number;
+      carbs: number;
+      fat: number;
+    };
+    averages: {
+      calories: number | null;
+      protein: number | null;
+      carbs: number | null;
+      fat: number | null;
+    };
+    source: WeeklySourceKind;
+  };
+  training: {
+    days: WeeklyTrainingDay[];
+    summary: {
+      workoutsCompleted: number;
+      durationMinutes: number;
+      volumeKg: number;
+      activeDays: number;
+    };
+    source: WeeklySourceKind;
+    bestEffort?: boolean;
+  };
+  sleep: {
+    days: WeeklySleepDay[];
+    summary: {
+      averageSleepMinutes: number | null;
+      totalSleepMinutes: number;
+      trackedDays: number;
+    };
+    source: WeeklySourceKind;
   };
 };
 
@@ -860,6 +929,199 @@ export async function getWeeklyReviewData(
   };
 }
 
+export async function getWeeklyOverview(
+  supabase: TypedSupabase,
+  userId: string,
+  options?: {
+    weekStart?: string;
+    timezone?: string;
+  }
+): Promise<WeeklyOverview> {
+  const timezone =
+    options?.timezone ??
+    (
+      (
+        (
+          await supabase
+            .from("profiles")
+            .select("timezone")
+            .eq("id", userId)
+            .maybeSingle()
+        ).data ?? null
+      ) as Pick<Profile, "timezone"> | null
+    )?.timezone ??
+    "Europe/Berlin";
+  const baseDate = options?.weekStart ?? toDateInputValue(new Date(), timezone);
+  const start = startOfWeekDateKey(baseDate, 1);
+  const end = endOfWeekDateKey(baseDate, 1);
+  const dates = Array.from({ length: 7 }, (_, index) => shiftDateKey(start, index));
+
+  const [
+    { data: entries },
+    { data: nutritionEntries },
+    { data: workouts }
+  ] = await Promise.all([
+    supabase
+      .from("daily_entries")
+      .select(
+        "entry_date, calories, protein_g, carbs_g, fat_g, nutrition_source, training_completed, training_source"
+      )
+      .eq("user_id", userId)
+      .gte("entry_date", start)
+      .lte("entry_date", end)
+      .order("entry_date", { ascending: true }),
+    supabase
+      .from("source_nutrition_entries")
+      .select("entry_date, calories, protein_g, carbs_g, fat_g")
+      .eq("user_id", userId)
+      .eq("provider", "fatsecret")
+      .gte("entry_date", start)
+      .lte("entry_date", end),
+    supabase
+      .from("source_workouts")
+      .select("workout_date, duration_minutes, raw_payload")
+      .eq("user_id", userId)
+      .eq("provider", "hevy")
+      .gte("workout_date", start)
+      .lte("workout_date", end)
+      .order("workout_date", { ascending: true })
+  ]);
+
+  const entryRows = (entries ?? []) as Array<
+    Pick<
+      DailyEntry,
+      | "entry_date"
+      | "calories"
+      | "protein_g"
+      | "carbs_g"
+      | "fat_g"
+      | "nutrition_source"
+      | "training_completed"
+      | "training_source"
+    >
+  >;
+  const nutritionRows = (nutritionEntries ?? []) as Array<
+    Pick<
+      SourceNutritionEntry,
+      "entry_date" | "calories" | "protein_g" | "carbs_g" | "fat_g"
+    >
+  >;
+  const workoutRows = (workouts ?? []) as Array<
+    Pick<SourceWorkout, "workout_date" | "duration_minutes" | "raw_payload">
+  >;
+
+  const entryMap = new Map(entryRows.map((entry) => [entry.entry_date, entry]));
+  const nutritionRowsByDate = new Map<string, typeof nutritionRows>();
+  for (const row of nutritionRows) {
+    const rowsForDate = nutritionRowsByDate.get(row.entry_date) ?? [];
+    rowsForDate.push(row);
+    nutritionRowsByDate.set(row.entry_date, rowsForDate);
+  }
+  const workoutRowsByDate = new Map<string, typeof workoutRows>();
+  for (const row of workoutRows) {
+    const rowsForDate = workoutRowsByDate.get(row.workout_date) ?? [];
+    rowsForDate.push(row);
+    workoutRowsByDate.set(row.workout_date, rowsForDate);
+  }
+
+  const nutritionDays: WeeklyDayNutrition[] = dates.map((date) => {
+    const entry = entryMap.get(date) ?? null;
+    const sourceRowsForDate = nutritionRowsByDate.get(date) ?? [];
+    const derivedTotals = sumNutritionRows(sourceRowsForDate);
+    const hasDerivedNutrition =
+      sourceRowsForDate.length > 0 &&
+      [derivedTotals.calories, derivedTotals.protein, derivedTotals.carbs, derivedTotals.fat].some(
+        (value) => value !== null
+      );
+
+    return {
+      date,
+      calories: entry?.calories ?? derivedTotals.calories,
+      protein: entry?.protein_g ?? derivedTotals.protein,
+      carbs: entry?.carbs_g ?? derivedTotals.carbs,
+      fat: entry?.fat_g ?? derivedTotals.fat,
+      source: resolveWeeklyNutritionSource(entry ?? null, hasDerivedNutrition)
+    };
+  });
+
+  const trainingDays: WeeklyTrainingDay[] = dates.map((date) => {
+    const entry = entryMap.get(date) ?? null;
+    const sourceRowsForDate = workoutRowsByDate.get(date) ?? [];
+    const workoutSummaries = sourceRowsForDate.map((row) => summarizeWorkoutRawPayload(row.raw_payload));
+    const workoutsCompleted = sourceRowsForDate.length;
+    const hasSyncedWorkout = workoutsCompleted > 0;
+    const durationMinutes = roundToSingleNullableNumber(
+      sourceRowsForDate.reduce((sum, row) => sum + (row.duration_minutes ?? 0), 0),
+      sourceRowsForDate.some((row) => row.duration_minutes !== null && row.duration_minutes !== undefined)
+    );
+    const volumeKg = roundToSingleNullableNumber(
+      workoutSummaries.reduce((sum, summary) => sum + (summary.totalVolumeKg ?? 0), 0),
+      workoutSummaries.some((summary) => summary.totalVolumeKg !== null)
+    );
+
+    return {
+      active: (entry?.training_completed ?? false) || hasSyncedWorkout,
+      bestEffort: hasSyncedWorkout
+        ? workoutSummaries.some((summary) => !summary.hasStructuredSummary)
+        : undefined,
+      date,
+      durationMinutes,
+      source: resolveWeeklyTrainingSource(entry ?? null, hasSyncedWorkout),
+      volumeKg,
+      workoutsCompleted
+    };
+  });
+
+  const sleepDays: WeeklySleepDay[] = dates.map((date) => ({
+    date,
+    sleepMinutes: null,
+    source: "none"
+  }));
+
+  return {
+    range: {
+      start,
+      end
+    },
+    nutrition: {
+      averages: {
+        calories: averageNullable(nutritionDays.map((day) => day.calories)),
+        protein: averageNullable(nutritionDays.map((day) => day.protein)),
+        carbs: averageNullable(nutritionDays.map((day) => day.carbs)),
+        fat: averageNullable(nutritionDays.map((day) => day.fat))
+      },
+      days: nutritionDays,
+      source: collapseWeeklySources(nutritionDays.map((day) => day.source)),
+      totals: {
+        calories: sumNullableNumbers(nutritionDays.map((day) => day.calories)),
+        protein: sumNullableNumbers(nutritionDays.map((day) => day.protein)),
+        carbs: sumNullableNumbers(nutritionDays.map((day) => day.carbs)),
+        fat: sumNullableNumbers(nutritionDays.map((day) => day.fat))
+      }
+    },
+    training: {
+      bestEffort: trainingDays.some((day) => day.bestEffort),
+      days: trainingDays,
+      source: collapseWeeklySources(trainingDays.map((day) => day.source)),
+      summary: {
+        activeDays: trainingDays.filter((day) => day.active).length,
+        durationMinutes: sumNullableNumbers(trainingDays.map((day) => day.durationMinutes)),
+        volumeKg: sumNullableNumbers(trainingDays.map((day) => day.volumeKg)),
+        workoutsCompleted: trainingDays.reduce((sum, day) => sum + day.workoutsCompleted, 0)
+      }
+    },
+    sleep: {
+      days: sleepDays,
+      source: "none",
+      summary: {
+        averageSleepMinutes: null,
+        totalSleepMinutes: 0,
+        trackedDays: 0
+      }
+    }
+  };
+}
+
 export async function getReviewPageData(
   supabase: TypedSupabase,
   userId: string
@@ -1230,6 +1492,37 @@ function resolveNutritionSourceStatus(
   return "missing";
 }
 
+function resolveWeeklyNutritionSource(
+  entry: Pick<
+    DailyEntry,
+    "calories" | "protein_g" | "carbs_g" | "fat_g" | "nutrition_source"
+  > | null,
+  hasDerivedNutrition: boolean
+): WeeklySourceKind {
+  if (entry?.nutrition_source === "manual") {
+    return "manual";
+  }
+
+  if (entry?.nutrition_source === "fatsecret") {
+    return "synced";
+  }
+
+  if (
+    (entry?.calories !== null && entry?.calories !== undefined) ||
+    (entry?.protein_g !== null && entry?.protein_g !== undefined) ||
+    (entry?.carbs_g !== null && entry?.carbs_g !== undefined) ||
+    (entry?.fat_g !== null && entry?.fat_g !== undefined)
+  ) {
+    return "manual";
+  }
+
+  if (hasDerivedNutrition) {
+    return "derived";
+  }
+
+  return "none";
+}
+
 function resolveTrainingSourceStatus(
   entry: DailyEntry | null,
   hasSyncedWorkout: boolean
@@ -1247,6 +1540,77 @@ function resolveTrainingSourceStatus(
   }
 
   return "missing";
+}
+
+function resolveWeeklyTrainingSource(
+  entry: Pick<DailyEntry, "training_completed" | "training_source"> | null,
+  hasSyncedWorkout: boolean
+): WeeklySourceKind {
+  if (entry?.training_source === "hevy") {
+    return "synced";
+  }
+
+  if (entry?.training_source === "manual" || entry?.training_completed) {
+    return "manual";
+  }
+
+  if (hasSyncedWorkout) {
+    return "synced";
+  }
+
+  return "none";
+}
+
+function collapseWeeklySources(sources: WeeklySourceKind[]): WeeklySourceKind {
+  const nonNoneSources = Array.from(new Set(sources.filter((source) => source !== "none")));
+
+  if (!nonNoneSources.length) {
+    return "none";
+  }
+
+  return nonNoneSources.length === 1 ? nonNoneSources[0] : "mixed";
+}
+
+function sumNullableNumbers(values: Array<number | null | undefined>): number {
+  return values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+}
+
+function averageNullable(values: Array<number | null | undefined>): number | null {
+  const presentValues = values.filter((value): value is number => value !== null && value !== undefined);
+
+  if (!presentValues.length) {
+    return null;
+  }
+
+  return roundToSingleNullableNumber(
+    presentValues.reduce((sum, value) => sum + value, 0) / presentValues.length,
+    true
+  );
+}
+
+function sumNutritionRows(
+  rows: Array<
+    Pick<SourceNutritionEntry, "calories" | "protein_g" | "carbs_g" | "fat_g">
+  >
+) {
+  return {
+    calories: roundToSingleNullableNumber(
+      rows.reduce((sum, row) => sum + (row.calories ?? 0), 0),
+      rows.some((row) => row.calories !== null && row.calories !== undefined)
+    ),
+    carbs: roundToSingleNullableNumber(
+      rows.reduce((sum, row) => sum + (row.carbs_g ?? 0), 0),
+      rows.some((row) => row.carbs_g !== null && row.carbs_g !== undefined)
+    ),
+    fat: roundToSingleNullableNumber(
+      rows.reduce((sum, row) => sum + (row.fat_g ?? 0), 0),
+      rows.some((row) => row.fat_g !== null && row.fat_g !== undefined)
+    ),
+    protein: roundToSingleNullableNumber(
+      rows.reduce((sum, row) => sum + (row.protein_g ?? 0), 0),
+      rows.some((row) => row.protein_g !== null && row.protein_g !== undefined)
+    )
+  };
 }
 
 function mapFatSecretMealTypeToTodoTaskIds(mealType: string) {
