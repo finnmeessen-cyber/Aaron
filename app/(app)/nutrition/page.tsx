@@ -32,8 +32,8 @@ export default async function NutritionPage({
     <PageShell>
       <PageHeader
         eyebrow="Nutrition"
-        title="Meals & Macros"
-        description="Editierbare Meal Templates für Trainingstag und Restday, ohne unnötigen Food-Tracking-Lärm."
+        title="Provider Syncs"
+        description="FatSecret für Meals, Hevy für Training und ein vorbereiteter Fitbit-Bereich für Sleep."
       />
       <NutritionEditor
         {...data}
