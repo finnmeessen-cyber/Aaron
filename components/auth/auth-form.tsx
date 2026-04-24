@@ -21,6 +21,7 @@ const AUTH_REDIRECT_ROUTES = [
   "/phases",
   "/weekly-review",
   "/settings",
+  "/settings/integrations",
   "/settings/phases"
 ] as const satisfies readonly Route[];
 

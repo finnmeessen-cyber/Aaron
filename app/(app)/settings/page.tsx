@@ -1,7 +1,7 @@
 import type { Route } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRight, Leaf, Upload } from "lucide-react";
+import { ArrowRight, Leaf, Link2, Upload } from "lucide-react";
 
 import { PageHeader } from "@/components/app-shell/page-header";
 import { PageShell } from "@/components/app-shell/page-shell";
@@ -13,6 +13,7 @@ import { hasSupabaseEnv } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 const HEVY_IMPORT_ROUTE = "/settings/hevy-import" as Route;
+const INTEGRATIONS_ROUTE = "/settings/integrations" as Route;
 const PHASES_ROUTE = "/settings/phases" as Route;
 
 export default async function SettingsPage() {
@@ -38,7 +39,7 @@ export default async function SettingsPage() {
         title="Einstellungen"
         description="Steuere Makros, Trainingstage, Theme, aktive Supplements und aktuelle Phase zentral an einem Ort."
       />
-      <div className="grid gap-5 xl:grid-cols-2">
+      <div className="grid gap-5 xl:grid-cols-3">
         <Card className="space-y-4 p-5 md:p-6">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="space-y-2">
@@ -59,6 +60,31 @@ export default async function SettingsPage() {
               className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl border border-border bg-card px-5 text-sm font-medium transition hover:border-primary/40 hover:bg-muted md:w-auto"
             >
               Import öffnen
+              <ArrowRight className="ml-2 h-4 w-4" />
+            </Link>
+          </div>
+        </Card>
+
+        <Card className="space-y-4 p-5 md:p-6">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-primary">
+                <Link2 className="h-4 w-4" />
+                <p className="text-xs uppercase tracking-[0.32em]">Integrations</p>
+              </div>
+              <div>
+                <CardTitle className="text-xl">Integrationen verwalten</CardTitle>
+                <CardDescription className="mt-1.5">
+                  Öffne den dedizierten Settings-Bereich für FatSecret, Hevy und den Fitbit
+                  Placeholder, ohne Domain-Inhalte zurück in Settings zu verschieben.
+                </CardDescription>
+              </div>
+            </div>
+            <Link
+              href={INTEGRATIONS_ROUTE}
+              className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl border border-border bg-card px-5 text-sm font-medium transition hover:border-primary/40 hover:bg-muted md:w-auto"
+            >
+              Integrations öffnen
               <ArrowRight className="ml-2 h-4 w-4" />
             </Link>
           </div>
