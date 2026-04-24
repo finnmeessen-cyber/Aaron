@@ -123,7 +123,9 @@ async function callAdminRpc<T>(
               message: error.message,
               name: error.name
             }
-          : error,
+          : {
+              message: String(error)
+            },
       fn,
       step: fn === "fatsecret_load_connection" ? "connection_access" : fn
     });
@@ -240,7 +242,9 @@ async function acquireFatSecretSyncLease(
               message: error.message,
               name: error.name
             }
-          : error,
+          : {
+              message: String(error)
+            },
       step: "acquire_lease"
     });
 
@@ -300,7 +304,9 @@ export async function loadStoredFatSecretConnection(
               message: error.message,
               name: error.name
             }
-          : error,
+          : {
+              message: String(error)
+            },
       step: "load_connection"
     });
 
@@ -462,7 +468,9 @@ export async function syncFatSecretEntries({
                   message: error.message,
                   name: error.name
                 }
-              : error,
+              : {
+                  message: String(error)
+                },
           providerMethod: "food_entries.get",
           step: "fetch_entries",
           triggerSource
