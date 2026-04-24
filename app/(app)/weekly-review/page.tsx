@@ -16,6 +16,11 @@ import { hasSupabaseEnv } from "@/lib/supabase/env";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { formatShortDate } from "@/lib/utils";
 
+type NutritionChartPoint = {
+  date: string;
+  value: number | null;
+};
+
 function formatValue(
   value: number | null,
   suffix = "",
@@ -64,6 +69,70 @@ function WeeklySourceBadge({ source }: { source: WeeklySourceKind }) {
   return <Badge tone={config[source].tone}>{config[source].label}</Badge>;
 }
 
+function formatAxisDateLabel(date: string) {
+  return formatShortDate(date).slice(0, 5);
+}
+
+function buildNutritionChartGeometry(points: NutritionChartPoint[]) {
+  const width = 100;
+  const height = 100;
+  const presentPoints = points
+    .map((point, index) => ({
+      index,
+      value: point.value
+    }))
+    .filter((point): point is { index: number; value: number } => point.value !== null);
+
+  if (!presentPoints.length) {
+    return {
+      circles: [] as Array<{ cx: number; cy: number; value: number }>,
+      maxValue: null as number | null,
+      minValue: null as number | null,
+      path: null as string | null
+    };
+  }
+
+  const values = presentPoints.map((point) => point.value);
+  const maxValue = Math.max(...values, 1);
+  const minValue = Math.min(...values, 0);
+  const range = maxValue - minValue || 1;
+
+  const toX = (index: number) => (index / Math.max(points.length - 1, 1)) * width;
+  const toY = (value: number) => height - ((value - minValue) / range) * height;
+
+  const segments: string[] = [];
+  let activeSegment: string[] = [];
+
+  points.forEach((point, index) => {
+    if (point.value === null) {
+      if (activeSegment.length) {
+        segments.push(activeSegment.join(" "));
+        activeSegment = [];
+      }
+      return;
+    }
+
+    const x = toX(index);
+    const y = toY(point.value);
+    activeSegment.push(`${activeSegment.length === 0 ? "M" : "L"} ${x} ${y}`);
+  });
+
+  if (activeSegment.length) {
+    segments.push(activeSegment.join(" "));
+  }
+
+  return {
+    circles: presentPoints.map((point) => ({
+      cx: toX(point.index),
+      cy: toY(point.value),
+      value: point.value
+    })),
+    maxValue,
+    minValue,
+    path: segments.join(" ")
+  };
+}
+
 function SectionHeader({
   description,
   source,
@@ -95,6 +164,98 @@ function SummaryValue({
     <div className="rounded-2xl border border-border bg-background/60 px-4 py-4">
       <p className="text-xs uppercase tracking-[0.28em] text-muted-foreground">{label}</p>
       <p className="mt-2 text-xl font-semibold tracking-tight">{value}</p>
+    </div>
+  );
+}
+
+function NutritionMetricChart({
+  accentClassName,
+  description,
+  label,
+  points,
+  suffix,
+  summaryValue
+}: {
+  accentClassName: string;
+  description: string;
+  label: string;
+  points: NutritionChartPoint[];
+  suffix: string;
+  summaryValue: number | null;
+}) {
+  const { circles, maxValue, minValue, path } = buildNutritionChartGeometry(points);
+
+  return (
+    <div className="rounded-2xl border border-border bg-background/60 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">{label}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        </div>
+        <p className="text-sm font-medium">{formatValue(summaryValue, suffix, { maximumFractionDigits: 0 })}</p>
+      </div>
+
+      {path ? (
+        <div className="mt-4">
+          <div className="relative">
+            <svg
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
+              className={`h-36 w-full overflow-visible ${accentClassName}`}
+              aria-hidden="true"
+            >
+              {[20, 50, 80].map((offset) => (
+                <line
+                  key={offset}
+                  x1="0"
+                  y1={offset}
+                  x2="100"
+                  y2={offset}
+                  stroke="currentColor"
+                  strokeDasharray="2 4"
+                  strokeOpacity="0.12"
+                />
+              ))}
+              <path
+                d={path}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {circles.map((circle, index) => (
+                <circle
+                  key={`${circle.value}-${index}`}
+                  cx={circle.cx}
+                  cy={circle.cy}
+                  r="1.9"
+                  fill="hsl(var(--background))"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                />
+              ))}
+            </svg>
+
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex flex-col justify-between py-1 text-[11px] text-muted-foreground">
+              <span>{formatValue(maxValue, suffix, { maximumFractionDigits: 0 })}</span>
+              <span>{formatValue(minValue, suffix, { maximumFractionDigits: 0 })}</span>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-7 gap-2 text-[11px] text-muted-foreground">
+            {points.map((point) => (
+              <span key={`${label}-${point.date}`} className="text-center">
+                {formatAxisDateLabel(point.date)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-8 text-sm text-muted-foreground">
+          Noch keine Datenpunkte in dieser Woche.
+        </div>
+      )}
     </div>
   );
 }
@@ -183,6 +344,11 @@ function SleepSection({ data }: { data: WeeklyOverview["sleep"] }) {
 }
 
 function NutritionSection({ data }: { data: WeeklyOverview["nutrition"] }) {
+  const caloriesPoints = data.days.map((day) => ({ date: day.date, value: day.calories }));
+  const proteinPoints = data.days.map((day) => ({ date: day.date, value: day.protein }));
+  const carbsPoints = data.days.map((day) => ({ date: day.date, value: day.carbs }));
+  const fatPoints = data.days.map((day) => ({ date: day.date, value: day.fat }));
+
   return (
     <Card className="space-y-4">
       <SectionHeader
@@ -209,6 +375,41 @@ function NutritionSection({ data }: { data: WeeklyOverview["nutrition"] }) {
         <SummaryValue label="Ø Protein" value={formatValue(data.averages.protein, " g")} />
         <SummaryValue label="Ø Kohlenhydrate" value={formatValue(data.averages.carbs, " g")} />
         <SummaryValue label="Ø Fett" value={formatValue(data.averages.fat, " g")} />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <NutritionMetricChart
+          label="Kalorien"
+          description="Null-Werte bleiben Lücken und werden nicht als 0 gezeichnet."
+          points={caloriesPoints}
+          suffix=" kcal"
+          summaryValue={data.averages.calories}
+          accentClassName="text-primary"
+        />
+        <NutritionMetricChart
+          label="Protein"
+          description="Tageswerte aus dem Weekly-Overview, ohne zusätzliche Umrechnung."
+          points={proteinPoints}
+          suffix=" g"
+          summaryValue={data.averages.protein}
+          accentClassName="text-success"
+        />
+        <NutritionMetricChart
+          label="Kohlenhydrate"
+          description="Die 7 festen Tage bleiben erhalten, auch wenn einzelne Werte fehlen."
+          points={carbsPoints}
+          suffix=" g"
+          summaryValue={data.averages.carbs}
+          accentClassName="text-warning"
+        />
+        <NutritionMetricChart
+          label="Fett"
+          description="Fehlende Tage werden als fehlend behandelt, nicht als künstliche Null."
+          points={fatPoints}
+          suffix=" g"
+          summaryValue={data.averages.fat}
+          accentClassName="text-danger"
+        />
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-border/70">
