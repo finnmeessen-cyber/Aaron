@@ -951,7 +951,11 @@ export async function getWeeklyOverview(
       ) as Pick<Profile, "timezone"> | null
     )?.timezone ??
     "Europe/Berlin";
-  const baseDate = options?.weekStart ?? toDateInputValue(new Date(), timezone);
+  const fallbackDate = toDateInputValue(new Date(), timezone);
+  const baseDate =
+    options?.weekStart && isDateKey(options.weekStart)
+      ? options.weekStart
+      : fallbackDate;
   const start = startOfWeekDateKey(baseDate, 1);
   const end = endOfWeekDateKey(baseDate, 1);
   const dates = Array.from({ length: 7 }, (_, index) => shiftDateKey(start, index));
@@ -1028,11 +1032,7 @@ export async function getWeeklyOverview(
     const entry = entryMap.get(date) ?? null;
     const sourceRowsForDate = nutritionRowsByDate.get(date) ?? [];
     const derivedTotals = sumNutritionRows(sourceRowsForDate);
-    const hasDerivedNutrition =
-      sourceRowsForDate.length > 0 &&
-      [derivedTotals.calories, derivedTotals.protein, derivedTotals.carbs, derivedTotals.fat].some(
-        (value) => value !== null
-      );
+    const hasSourceNutrition = sourceRowsForDate.length > 0;
 
     return {
       date,
@@ -1040,7 +1040,7 @@ export async function getWeeklyOverview(
       protein: entry?.protein_g ?? derivedTotals.protein,
       carbs: entry?.carbs_g ?? derivedTotals.carbs,
       fat: entry?.fat_g ?? derivedTotals.fat,
-      source: resolveWeeklyNutritionSource(entry ?? null, hasDerivedNutrition)
+      source: resolveWeeklyNutritionSource(entry ?? null, hasSourceNutrition)
     };
   });
 
@@ -1497,7 +1497,7 @@ function resolveWeeklyNutritionSource(
     DailyEntry,
     "calories" | "protein_g" | "carbs_g" | "fat_g" | "nutrition_source"
   > | null,
-  hasDerivedNutrition: boolean
+  hasSourceNutrition: boolean
 ): WeeklySourceKind {
   if (entry?.nutrition_source === "manual") {
     return "manual";
@@ -1507,6 +1507,10 @@ function resolveWeeklyNutritionSource(
     return "synced";
   }
 
+  if (hasSourceNutrition) {
+    return "derived";
+  }
+
   if (
     (entry?.calories !== null && entry?.calories !== undefined) ||
     (entry?.protein_g !== null && entry?.protein_g !== undefined) ||
@@ -1514,10 +1518,6 @@ function resolveWeeklyNutritionSource(
     (entry?.fat_g !== null && entry?.fat_g !== undefined)
   ) {
     return "manual";
-  }
-
-  if (hasDerivedNutrition) {
-    return "derived";
   }
 
   return "none";

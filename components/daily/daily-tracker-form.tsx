@@ -379,6 +379,10 @@ export function DailyTrackerForm(props: DailyTrackerFormProps) {
     setActiveSection("metrics");
   }, [props]);
 
+  useEffect(() => {
+    touchedFieldsRef.current = new Set();
+  }, [activeEntryDate]);
+
   const groupedChecklist = useMemo(() => {
     return checklistTemplates.reduce<Record<string, ChecklistTemplateWithCompletion[]>>(
       (accumulator, template) => {
