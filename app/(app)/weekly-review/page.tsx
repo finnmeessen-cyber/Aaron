@@ -21,6 +21,12 @@ type NutritionChartPoint = {
   value: number | null;
 };
 
+type TrainingTimelineDay = {
+  active: boolean;
+  date: string;
+  durationMinutes: number | null;
+};
+
 function formatValue(
   value: number | null,
   suffix = "",
@@ -71,6 +77,34 @@ function WeeklySourceBadge({ source }: { source: WeeklySourceKind }) {
 
 function formatAxisDateLabel(date: string) {
   return formatShortDate(date).slice(0, 5);
+}
+
+function getTrainingConsistency(activeDays: number) {
+  if (activeDays === 0) {
+    return {
+      description: "Keine aktiven Trainingstage in dieser Woche.",
+      label: "Keine Einheit"
+    };
+  }
+
+  if (activeDays <= 2) {
+    return {
+      description: "Leichte Woche mit wenig Trainingsfrequenz.",
+      label: "Leichte Woche"
+    };
+  }
+
+  if (activeDays <= 4) {
+    return {
+      description: "Solide Frequenz mit guter Wochenabdeckung.",
+      label: "Solide Woche"
+    };
+  }
+
+  return {
+    description: "Hohe Aktivität mit vielen Trainingstagen.",
+    label: "Hohe Aktivität"
+  };
 }
 
 function buildNutritionChartGeometry(points: NutritionChartPoint[]) {
@@ -164,6 +198,70 @@ function SummaryValue({
     <div className="rounded-2xl border border-border bg-background/60 px-4 py-4">
       <p className="text-xs uppercase tracking-[0.28em] text-muted-foreground">{label}</p>
       <p className="mt-2 text-xl font-semibold tracking-tight">{value}</p>
+    </div>
+  );
+}
+
+function TrainingTimeline({
+  days,
+  maxDurationMinutes
+}: {
+  days: TrainingTimelineDay[];
+  maxDurationMinutes: number;
+}) {
+  return (
+    <div className="rounded-2xl border border-border bg-background/60 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">Aktive Tage</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Kompakter Verlauf auf Basis von Aktivität und verfügbarer Dauer.
+          </p>
+        </div>
+        <p className="text-sm text-muted-foreground">{days.filter((day) => day.active).length}/7 aktiv</p>
+      </div>
+
+      <div className="mt-4 grid grid-cols-7 gap-2">
+        {days.map((day) => {
+          const barHeight =
+            day.durationMinutes !== null && maxDurationMinutes > 0
+              ? Math.max(14, (day.durationMinutes / maxDurationMinutes) * 72)
+              : 10;
+
+          return (
+            <div
+              key={day.date}
+              className="flex min-w-0 flex-col items-center gap-2 rounded-2xl border border-border/70 bg-muted/30 px-2 py-3"
+            >
+              <div className="flex h-20 items-end">
+                {day.durationMinutes !== null ? (
+                  <div
+                    className={`w-6 rounded-full ${
+                      day.active ? "bg-primary/80" : "bg-muted-foreground/40"
+                    }`}
+                    style={{ height: `${barHeight}px` }}
+                  />
+                ) : (
+                  <div
+                    className={`w-6 rounded-full border border-dashed ${
+                      day.active ? "border-primary/60 bg-primary/10" : "border-border bg-transparent"
+                    }`}
+                    style={{ height: `${barHeight}px` }}
+                  />
+                )}
+              </div>
+              <span className="text-[11px] font-medium">{formatAxisDateLabel(day.date)}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {day.durationMinutes !== null
+                  ? `${Math.round(day.durationMinutes)}m`
+                  : day.active
+                    ? "aktiv"
+                    : "–"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -422,6 +520,24 @@ function NutritionSection({ data }: { data: WeeklyOverview["nutrition"] }) {
 }
 
 function TrainingSection({ data }: { data: WeeklyOverview["training"] }) {
+  const consistency = getTrainingConsistency(data.summary.activeDays);
+  const trackedDurationDays = data.days.filter((day) => day.durationMinutes !== null).length;
+  const trackedVolumeWorkouts = data.days.reduce((sum, day) => {
+    if (day.volumeKg === null || day.workoutsCompleted === 0) {
+      return sum;
+    }
+
+    return sum + day.workoutsCompleted;
+  }, 0);
+  const averageDurationPerTrackedDay =
+    trackedDurationDays > 0 ? data.summary.durationMinutes / trackedDurationDays : null;
+  const averageVolumePerTrackedWorkout =
+    trackedVolumeWorkouts > 0 ? data.summary.volumeKg / trackedVolumeWorkouts : null;
+  const maxDurationMinutes = Math.max(
+    ...data.days.map((day) => day.durationMinutes ?? 0),
+    0
+  );
+
   return (
     <Card className="space-y-4">
       <SectionHeader
@@ -440,11 +556,37 @@ function TrainingSection({ data }: { data: WeeklyOverview["training"] }) {
         <SummaryValue label="Aktive Tage" value={`${data.summary.activeDays}/7`} />
       </div>
 
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <SummaryValue label="Konsistenz" value={consistency.label} />
+        <SummaryValue
+          label="Ø Dauer / Tag*"
+          value={formatValue(averageDurationPerTrackedDay, " min", { maximumFractionDigits: 0 })}
+        />
+        <SummaryValue
+          label="Ø Volumen / Workout*"
+          value={formatValue(averageVolumePerTrackedWorkout, " kg")}
+        />
+      </div>
+
+      <p className="text-sm text-muted-foreground">
+        {consistency.description} Werte mit * basieren nur auf Tagen oder Workouts, für die Dauer
+        bzw. Volumen tatsächlich vorliegen.
+      </p>
+
       {data.bestEffort ? (
         <p className="text-sm text-muted-foreground">
           Einige Trainingswerte sind best-effort, weil nicht jede Hevy-Payload vollständige Details enthält.
         </p>
       ) : null}
+
+      <TrainingTimeline
+        days={data.days.map((day) => ({
+          active: day.active,
+          date: day.date,
+          durationMinutes: day.durationMinutes
+        }))}
+        maxDurationMinutes={maxDurationMinutes}
+      />
 
       <div className="overflow-hidden rounded-2xl border border-border/70">
         {data.days.map((day) => (
