@@ -522,13 +522,10 @@ function NutritionSection({ data }: { data: WeeklyOverview["nutrition"] }) {
 function TrainingSection({ data }: { data: WeeklyOverview["training"] }) {
   const consistency = getTrainingConsistency(data.summary.activeDays);
   const trackedDurationDays = data.days.filter((day) => day.durationMinutes !== null).length;
-  const trackedVolumeWorkouts = data.days.reduce((sum, day) => {
-    if (day.volumeKg === null || day.workoutsCompleted === 0) {
-      return sum;
-    }
-
-    return sum + day.workoutsCompleted;
-  }, 0);
+  const trackedVolumeWorkouts = data.days.reduce(
+    (sum, day) => sum + day.workoutsWithKnownVolume,
+    0
+  );
   const averageDurationPerTrackedDay =
     trackedDurationDays > 0 ? data.summary.durationMinutes / trackedDurationDays : null;
   const averageVolumePerTrackedWorkout =

@@ -241,6 +241,7 @@ export type WeeklyDayNutrition = {
 export type WeeklyTrainingDay = {
   date: string;
   workoutsCompleted: number;
+  workoutsWithKnownVolume: number;
   durationMinutes: number | null;
   volumeKg: number | null;
   active: boolean;
@@ -1049,6 +1050,9 @@ export async function getWeeklyOverview(
     const sourceRowsForDate = workoutRowsByDate.get(date) ?? [];
     const workoutSummaries = sourceRowsForDate.map((row) => summarizeWorkoutRawPayload(row.raw_payload));
     const workoutsCompleted = sourceRowsForDate.length;
+    const workoutsWithKnownVolume = workoutSummaries.filter(
+      (summary) => summary.totalVolumeKg !== null
+    ).length;
     const hasSyncedWorkout = workoutsCompleted > 0;
     const durationMinutes = roundToSingleNullableNumber(
       sourceRowsForDate.reduce((sum, row) => sum + (row.duration_minutes ?? 0), 0),
@@ -1068,7 +1072,8 @@ export async function getWeeklyOverview(
       durationMinutes,
       source: resolveWeeklyTrainingSource(entry ?? null, hasSyncedWorkout),
       volumeKg,
-      workoutsCompleted
+      workoutsCompleted,
+      workoutsWithKnownVolume
     };
   });
 
@@ -1511,6 +1516,8 @@ function resolveWeeklyNutritionSource(
     return "derived";
   }
 
+  // If nutrition_source is unset, no source rows remain, and daily macros exist,
+  // Weekly falls back to manual because true historical provenance cannot be reconstructed.
   if (
     (entry?.calories !== null && entry?.calories !== undefined) ||
     (entry?.protein_g !== null && entry?.protein_g !== undefined) ||
@@ -1531,6 +1538,8 @@ function resolveTrainingSourceStatus(
     return "synced";
   }
 
+  // Weekly mirrors Daily completion semantics: a true training_completed flag with no explicit
+  // source still resolves to manual, even if synced workout rows also exist.
   if (entry?.training_source === "manual" || entry?.training_completed) {
     return "manual";
   }
